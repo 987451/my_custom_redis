@@ -3,11 +3,13 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+// 비동기와 소켓 준비
+#[tokio::main] // 1. 비동기 환경(Tokio 런타임)을 시작
+async fn main() -> Result<(), Box<dyn std::error::Error>> { // 2. 에러가 날 수 있는 비동기 함수
     let addr = "127.0.0.1:6379";
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(addr).await?; // 3. 6379 포트를 열고 기다림
 
+    // 공유 메모리 (Arc와 Mutex)
     let db = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     println!("🚀[v2.1] 스레드 안전성이 극대화된 커스텀 Redis 서버 실행 중: {}", addr);
 
@@ -55,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // 자물쇠가 없는 안전한 상태에서 네트워크 통신(.await) 수행!
                                     writer.write_all(b"OK\r\n").await.unwrap();
                                 } else {
-                                    writer.write_all(b"ERROR: SET requires key and value\n").await.unwrap();
+                                    writer.write_all(b"ERROR: SET requires key and value\r\n").await.unwrap();
                                 }
                             }
                             "GET" => {
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // 🌟 [핵심 해결책 2] 데이터를 읽어온 뒤 문자열로 복사하고, 바로 자물쇠를 풉니다!
                                     let response_str = {
+                                        // 여기서 결과를 만들어서 밖으로 던짐
                                         let locked_db = db_clone.lock().unwrap();
                                         match locked_db.get(key) {
                                             Some(value) => format!("{}\r\n", value), // 값을 복사해서 저장
@@ -71,14 +74,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }; // <- 괄호가 닫히면서 자물쇠가 풀림!
 
-                                    // 네트워크 통신(.await)은 자물쇠 밖에서 수행!
+                                    // 자물쇠는 이미 풀렸고, 안전하게 '말'만 전달함
                                     writer.write_all(response_str.as_bytes()).await.unwrap();
                                 } else {
-                                    writer.write_all(b"ERROR: GET requires a key\n").await.unwrap();
+                                    writer.write_all(b"ERROR: GET requires a key\r\n").await.unwrap();
                                 }
                             }
                             _ => {
-                                writer.write_all(b"ERROR: Unknown command\n").await.unwrap();
+                                writer.write_all(b"ERROR: Unknown command\r\n").await.unwrap();
                             }
                         }
                     }
