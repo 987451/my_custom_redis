@@ -1,0 +1,11 @@
+SET name genius
+SET name genius
+SET age 25
+SET name genius
+SET age 25
+SET name genius
+SET age 25
+SET name genius
+SET age 25
+SET name genius
+SET age 25

@@ -1,51 +1,54 @@
-﻿# 🚀 Mini-Redis Core (Rust)
+﻿# 🚀 My-Custom-Redis: From Scratch to Standard Protocol
 
-Rust의 비동기 런타임 **Tokio**를 활용하여 밑바닥부터 구현한 고성능 In-Memory Key-Value 데이터베이스 엔진입니다. 시스템 프로그래밍의 핵심인 **메모리 안전성, 동시성 제어, 네트워크 프로토콜 설계**를 깊이 있게 탐구한 프로젝트입니다.
+Rust와 비동기 런타임 **Tokio**를 활용하여 밑바닥부터 구현한 고성능 In-Memory Key-Value 데이터베이스 엔진입니다. 단순한 기능 구현을 넘어, **산업 표준 프로토콜(RESP)**과 **데이터 영속성(AOF)** 아키텍처를 설계하며 시스템 프로그래밍의 정수를 학습했습니다.
 
 ## 🛠 Tech Stack
-- **Language:** Rust (Edition 2021)
+- **Language:** Rust (Safety & High-performance)
 - **Runtime:** Tokio (Multi-threaded Async I/O)
-- **Data Structure:** `HashMap<String, String>`
-- **Concurrency Control:** `Arc<Mutex<T>>` (Atomic Reference Counting & Mutual Exclusion)
-- **Protocol:** Custom Text-based Protocol (CRLF Standardized)
+- **State Management:** `Arc<Mutex<HashMap<String, String>>>`
+- **Persistence:** AOF (Append Only File) with `sync_all` reliability
+- **Protocol:** RESP (Redis Serialization Protocol) - `redis-cli` compatible
 
-## ✨ Key Features
-- **High-Performance Async Server:** `tokio::spawn`을 통한 클라이언트별 독립적 비동기 태스크 처리.
-- **Thread-Safe Shared State:** `Arc`와 `Mutex`를 결합하여 여러 클라이언트가 동시에 접속해도 데이터 오염(Data Race)이 발생하지 않는 구조 설계.
-- **Buffered I/O Stream:** `BufReader`를 도입하여 네트워크 패킷이 쪼개져 들어오는 상황에서도 데이터 유실 없이 문장 단위(Line-based)로 파싱.
-- **Robust Command Engine:** `SET` (Key-Value 저장), `GET` (조회 및 Option 처리) 명령어 완벽 지원.
+## ✨ Key Features (V4.0)
+- **Real Redis Compatibility:** 진짜 `redis-cli`와 통신 가능한 **RESP 파서** 구현 (PING, SET, GET 지원).
+- **Persistent Engine (AOF):** 서버 종료 시에도 데이터가 유실되지 않는 **파일 기반 복구 시스템**.
+- **Thread-Safe Shared State:** `Arc/Mutex`와 **Scoped Lock** 패턴을 통한 동시성 제어 및 데드락 방지.
+- **Cross-Platform Communication:** CRLF(`\r\n`) 규격을 준수하여 Windows/Linux 등 다양한 환경 대응.
 
-## 🔥 Genius Troubleshooting (핵심 문제 해결 기록)
+## 🔥 Genius Troubleshooting & Insights
 
-### 1. 비동기 환경에서의 Mutex 고도화 (Send Trait Error)
-- **문제:** `MutexGuard`를 소유한 상태에서 `.await` 호출 시 "Future cannot be sent between threads safely" 에러 발생.
-- **분석:** 비동기 작업 중 스레드가 전환될 때, 자물쇠를 쥔 채로 대기(Suspend)하면 데드락(Deadlock) 위험이 있음을 파악.
-- **솔루션:** **Scoped Lock 패턴**을 적용하여 자물쇠 점유 시간을 중괄호(`{}`)로 제한. 데이터 수정 직후 자물쇠를 즉시 반납하게 설계하여 시스템 안정성과 처리 속도를 동시에 확보.
+### 1. RESP Protocol & Binary Safety
+- **문제:** 단순 문자열 파싱은 공백이나 특수 문자가 포함된 데이터 처리 시 한계 발생.
+- **분석:** Redis가 채택한 **RESP(길이 기반 선언)** 방식의 우수성 파악.
+- **해결:** `*N`(배열 개수)과 `$L`(데이터 길이) 정보를 2단계로 읽어 들이는 파싱 엔진을 구현하여 데이터의 무결성 확보.
 
-### 2. 프로토콜 일관성 및 크로스 플랫폼 호환성 (CRLF Issue)
-- **문제:** Windows Telnet 클라이언트 접속 시 출력 결과가 계단식으로 밀리는 현상 및 에러 메시지 가독성 저하.
-- **분석:** Unix(`\n`)와 Windows(`\r\n`)의 줄바꿈(Carriage Return) 처리 방식 차이가 원인임을 식별.
-- **솔루션:** 성공 응답뿐만 아니라 **모든 에러 메시지(Edge Cases)**까지 네트워크 표준인 `\r\n`(CRLF)으로 통일. 어떤 환경의 클라이언트에서도 일관된 사용자 경험(UX)을 제공하도록 프로토콜 정규화.
+### 2. AOF Persistence & File Pointer Management
+- **문제:** AOF 모드로 저장 후 서버 재시작 시 데이터를 읽어오지 못하는 이슈 발생.
+- **분석:** `Append` 모드로 파일을 열면 커서(File Pointer)가 항상 끝에 위치한다는 사실을 인지.
+- **해결:** **`seek(SeekFrom::Start(0))`** 연산을 도입하여 복구 시 테이프를 처음으로 되감는 '리플레이(Replay)' 로직 완성.
 
-### 3. Rust의 Option 타입을 활용한 안정적 조회 설계
-- **문제:** 존재하지 않는 키를 조회할 때 발생할 수 있는 Null Pointer 에러 위험.
-- **분석:** Rust의 `Option<T>` 타입을 `match` 문으로 강제 처리하여 런타임 에러 가능성 제거.
-- **솔루션:** 데이터 부재 시 `(nil)` 응답을 명시적으로 반환함으로써 Redis 표준 규격을 준수하고 시스템의 견고함(Robustness) 증명.
+### 3. Port Conflict & Network Infrastructure
+- **문제:** 진짜 Redis 설치 후 `PermissionDenied` 에러 발생.
+- **분석:** 동일한 포트(6379)를 선점하려는 프로세스 간의 자원 충돌 확인.
+- **해결:** 포트 번호 변경(6380) 및 윈도우 환경 변수(PATH) 설정을 통해 로컬 인프라 제어 능력 습득.
 
-## 📚 Learning Journey (공부 흔적)
-본 프로젝트는 학습의 효율성을 높이기 위해 `examples/` 디렉토리를 활용한 **모듈형 학습 방식**을 채택했습니다.
-- `01_ownership.rs`: Rust의 핵심인 소유권 이동과 복사(Clone) 원리 학습
-- `02_mutex_study.rs`: 데이터 보호를 위한 상호 배제(Mutex) 및 자물쇠 자동 반납 메커니즘 검증
-- `03_arc_study.rs`: 멀티스레드 환경에서의 데이터 공유(Arc)와 스레드 대기(Join) 실험
+## 🧪 Deep Dive Learning (Examples)
+프로젝트 내부 `examples/` 폴더를 통해 Rust의 핵심 철학을 독립적으로 검증했습니다.
+- `01~03`: Ownership, Mutex, Arc (메모리 공유와 동시성)
+- `04`: AOF File I/O (물리적 저장과 복구)
+- `05`: RESP Parser (프로토콜 해체)
+- `06`: Scoped Lock (비동기 자물쇠 제어)
+- `07`: Option/Match (Null-safety와 안정적 조회)
 
 ## 🚀 How to Run
 ```bash
-# 서버 실행
+# 1. 서버 실행
 cargo run
 
-# 클라이언트 접속 (Windows Telnet 예시)
-telnet 127.0.0.1 6379
+# 2. 진짜 Redis 클라이언트로 접속 (6380 포트 조준)
+redis-cli -p 6380
 
-# 테스트 명령어
-SET my_key hello_rust
-GET my_key
+# 3. 명령어 테스트
+SET myname genius
+GET myname
+SHUTDOWN
