@@ -1,54 +1,45 @@
-﻿# 🚀 My-Custom-Redis: From Scratch to Standard Protocol
+﻿# 🚀 My-Custom-Redis: Storage Optimization & Persistent Engine
 
-Rust와 비동기 런타임 **Tokio**를 활용하여 밑바닥부터 구현한 고성능 In-Memory Key-Value 데이터베이스 엔진입니다. 단순한 기능 구현을 넘어, **산업 표준 프로토콜(RESP)**과 **데이터 영속성(AOF)** 아키텍처를 설계하며 시스템 프로그래밍의 정수를 학습했습니다.
+Rust와 **Tokio** 비동기 런타임을 활용한 고성능 In-Memory Key-Value 저장소입니다. V4.5에서는 데이터의 무한 증식을 막고 저장 효율을 극대화하는 **AOF Rewrite** 메커니즘을 성공적으로 도입했습니다.
 
 ## 🛠 Tech Stack
-- **Language:** Rust (Safety & High-performance)
-- **Runtime:** Tokio (Multi-threaded Async I/O)
-- **State Management:** `Arc<Mutex<HashMap<String, String>>>`
-- **Persistence:** AOF (Append Only File) with `sync_all` reliability
-- **Protocol:** RESP (Redis Serialization Protocol) - `redis-cli` compatible
+- **Language:** Rust (Strong Ownership & Safety)
+- **Runtime:** Tokio (Lock-free Concurrency)
+- **Persistence:** AOF (Append Only File) with **Atomic Rewrite**
+- **Protocol:** RESP (Redis Serialization Protocol) Standard
 
-## ✨ Key Features (V4.0)
-- **Real Redis Compatibility:** 진짜 `redis-cli`와 통신 가능한 **RESP 파서** 구현 (PING, SET, GET 지원).
-- **Persistent Engine (AOF):** 서버 종료 시에도 데이터가 유실되지 않는 **파일 기반 복구 시스템**.
-- **Thread-Safe Shared State:** `Arc/Mutex`와 **Scoped Lock** 패턴을 통한 동시성 제어 및 데드락 방지.
-- **Cross-Platform Communication:** CRLF(`\r\n`) 규격을 준수하여 Windows/Linux 등 다양한 환경 대응.
+## ✨ New Features (V4.5)
+- **AOF Rewrite Engine:** 중복된 명령어 로그를 현재 메모리 상태로 압축하여 파일 크기를 최적화하는 `REWRITE` 명령어 구현.
+- **Atomic File Swap:** 임시 파일 생성 후 `std::fs::rename`을 이용한 원자적 교체로 데이터 일관성 보장.
+- **Async Lock Scoping:** 비동기 환경에서의 자물쇠 점유 시간을 최소화하여 시스템 응답성 향상.
+- **Graceful Control:** `SHUTDOWN` 명령어를 통한 안전한 서버 종료 지원.
 
-## 🔥 Genius Troubleshooting & Insights
+## 🔥 Genius Troubleshooting & Technical Insights
 
-### 1. RESP Protocol & Binary Safety
-- **문제:** 단순 문자열 파싱은 공백이나 특수 문자가 포함된 데이터 처리 시 한계 발생.
-- **분석:** Redis가 채택한 **RESP(길이 기반 선언)** 방식의 우수성 파악.
-- **해결:** `*N`(배열 개수)과 `$L`(데이터 길이) 정보를 2단계로 읽어 들이는 파싱 엔진을 구현하여 데이터의 무결성 확보.
+### 1. AOF Rewrite: Log Compaction Logic
+- **문제:** 동일한 키에 대한 반복적인 `SET` 명령이 AOF 파일의 크기를 무한정 키우는 '로그 비대화' 현상 발생.
+- **분석:** `HashMap`이 최신 값만 유지한다는 특성을 이용해, 현재 메모리 스냅샷을 다시 기록하면 데이터 압축이 가능함을 발견.
+- **해결:** `REWRITE` 명령 시 메모리 전체를 순회하며 최신 상태만 새 파일에 기록함으로써 저장소 효율성을 극대화함.
 
-### 2. AOF Persistence & File Pointer Management
-- **문제:** AOF 모드로 저장 후 서버 재시작 시 데이터를 읽어오지 못하는 이슈 발생.
-- **분석:** `Append` 모드로 파일을 열면 커서(File Pointer)가 항상 끝에 위치한다는 사실을 인지.
-- **해결:** **`seek(SeekFrom::Start(0))`** 연산을 도입하여 복구 시 테이프를 처음으로 되감는 '리플레이(Replay)' 로직 완성.
+### 2. Async Safety & Send Trait (The Scoped Lock)
+- **문제:** `REWRITE` 로직 내에서 `MutexGuard`를 소유한 채 `.await` 호출 시 컴파일러가 `Future cannot be sent between threads safely` 에러 발생.
+- **분석:** 자물쇠를 쥔 채 비동기 휴식(Suspend)에 들어가면 데드락(Deadlock) 위험이 있음을 Rust의 타입 시스템이 감지한 것임.
+- **해결:** **중괄호 `{ }` 스코프**를 사용하여 데이터 쓰기가 끝나는 즉시 자물쇠를 반납하도록 설계. 자물쇠 점유(Data Work)와 비동기 I/O(Network Response)를 완벽히 분리하여 안전성 확보.
 
-### 3. Port Conflict & Network Infrastructure
-- **문제:** 진짜 Redis 설치 후 `PermissionDenied` 에러 발생.
-- **분석:** 동일한 포트(6379)를 선점하려는 프로세스 간의 자원 충돌 확인.
-- **해결:** 포트 번호 변경(6380) 및 윈도우 환경 변수(PATH) 설정을 통해 로컬 인프라 제어 능력 습득.
-
-## 🧪 Deep Dive Learning (Examples)
-프로젝트 내부 `examples/` 폴더를 통해 Rust의 핵심 철학을 독립적으로 검증했습니다.
-- `01~03`: Ownership, Mutex, Arc (메모리 공유와 동시성)
-- `04`: AOF File I/O (물리적 저장과 복구)
-- `05`: RESP Parser (프로토콜 해체)
-- `06`: Scoped Lock (비동기 자물쇠 제어)
-- `07`: Option/Match (Null-safety와 안정적 조회)
+### 3. Atomic Rename for Data Consistency
+- **문제:** 파일 쓰기 도중 서버가 꺼질 경우 기존 AOF 파일이 손상될 위험.
+- **해결:** 임시 파일(`temp.aof`)에 먼저 기록한 뒤, 운영체제 수준의 `rename` 명령을 사용해 파일 교체를 **원자적으로(At once)** 수행하여 안전한 영속성 보장.
 
 ## 🚀 How to Run
 ```bash
 # 1. 서버 실행
 cargo run
 
-# 2. 진짜 Redis 클라이언트로 접속 (6380 포트 조준)
+# 2. Redis 클라이언트 접속
 redis-cli -p 6380
 
-# 3. 명령어 테스트
-SET myname genius
-GET myname
-SHUTDOWN
+# 3. 최적화 테스트
+SET a 1
+SET a 2
+SET a 3
+REWRITE   # appendonly.aof가 'SET a 3' 한 줄로 압축됨

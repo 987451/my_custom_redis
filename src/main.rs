@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aof = Arc::new(AofManager::new("appendonly.aof"));
     aof.restore(&db);
 
-    println!("🔥 [v4.0] 영속성(AOF)이 확보된 Redis 서버 실행 중: {}", addr);
+    println!("🔥 [v4.5] 영속성(AOF)이 확보된 Redis 서버 실행 중: {}", addr);
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
@@ -153,6 +153,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 🌟 프로그램을 즉시 종료시키는 마법의 코드
                                 std::process::exit(0);
                             }
+
+                            "REWRITE" => {
+                                {
+                                    let locked_db = db_clone.lock().unwrap(); // 자물쇠 획득
+
+                                    let temp_path = "appendonly.aof.temp";
+                                    let mut file = std::fs::File::create(temp_path).unwrap();
+
+                                    for (key, value) in locked_db.iter() {
+                                        let line = format!("SET {} {}\n", key, value);
+                                        file.write_all(line.as_bytes()).unwrap();
+                                    }
+
+                                    std::fs::rename(temp_path, "appendonly.aof").unwrap();
+                                }
+                                writer.write_all(b"+OK AOF Rewrite Complete\r\n").await.unwrap();
+                            }
+
                             "SET" => {
                                 if args.len() >= 3 {
                                     let key = args[1].clone();
