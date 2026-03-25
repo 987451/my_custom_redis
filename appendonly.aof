@@ -1,2 +1,9 @@
 SET a 250
 SET test 1234
+SET project custom_redis
+SET status awesome
+SET name ka
+SET name ko
+SET myname genius EX 10
+SET myname awesome EX 10
+SET myname a EX 10

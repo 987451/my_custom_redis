@@ -1,45 +1,47 @@
-﻿# 🚀 My-Custom-Redis: Storage Optimization & Persistent Engine
+﻿# 🚀 My-Custom-Redis V5.0: Time-Aware Persistent Engine
 
-Rust와 **Tokio** 비동기 런타임을 활용한 고성능 In-Memory Key-Value 저장소입니다. V4.5에서는 데이터의 무한 증식을 막고 저장 효율을 극대화하는 **AOF Rewrite** 메커니즘을 성공적으로 도입했습니다.
+단순한 Key-Value 저장소를 넘어, 데이터의 생명주기를 스스로 관리(TTL)하고 실시간 웹 대시보드를 통해 내부 상태를 투명하게 시각화하는 **모던 인메모리 데이터베이스 엔진**입니다.
 
-## 🛠 Tech Stack
-- **Language:** Rust (Strong Ownership & Safety)
-- **Runtime:** Tokio (Lock-free Concurrency)
+## 🛠 Tech Stack Update
+- **Core Engine:** Rust (Memory Safety & Zero-cost Abstractions)
+- **Async Runtime:** Tokio (Active TTL Janitor & Multi-protocol Spawning)
 - **Persistence:** AOF (Append Only File) with **Atomic Rewrite**
-- **Protocol:** RESP (Redis Serialization Protocol) Standard
+- **Protocol:** RESP (Standard Redis Protocol) Compatible
+- **Web Interface:** Axum + Serde (Real-time HTML5 Dashboard)
 
-## ✨ New Features (V4.5)
-- **AOF Rewrite Engine:** 중복된 명령어 로그를 현재 메모리 상태로 압축하여 파일 크기를 최적화하는 `REWRITE` 명령어 구현.
-- **Atomic File Swap:** 임시 파일 생성 후 `std::fs::rename`을 이용한 원자적 교체로 데이터 일관성 보장.
-- **Async Lock Scoping:** 비동기 환경에서의 자물쇠 점유 시간을 최소화하여 시스템 응답성 향상.
-- **Graceful Control:** `SHUTDOWN` 명령어를 통한 안전한 서버 종료 지원.
+## ✨ New Features (V5.0)
+- **Smart TTL (Time-To-Live):** `SET key val EX 5` 명령어를 통한 자동 만료 기능.
+    - **Passive Expiration:** 조회 시 즉시 만료 확인 및 삭제.
+    - **Active Expiration:** 백그라운드 태스크(Janitor)가 1초마다 메모리를 스캔하여 만료 데이터 청소.
+- **Real-time Web Dashboard:** `http://localhost:8080`에서 메모리 상태를 실시간(2s interval) 모니터링.
+    - **Layout Fix:** `table-layout: fixed` 설정을 통해 데이터 변화에도 흔들림 없는 UI 구현.
+    - **Deterministic Sorting:** `HashMap`의 무작위성을 극복하기 위해 클라이언트 단에서 **Key 기준 오름차순 정렬** 적용.
+- **Log Compaction (AOF Rewrite):** `REWRITE` 명령을 통해 중복된 역사를 제거하고 '최종 상태'만 남기는 최적화 엔진 탑재.
 
-## 🔥 Genius Troubleshooting & Technical Insights
+## 🔥 Genius Troubleshooting & Architecture Insights
 
-### 1. AOF Rewrite: Log Compaction Logic
-- **문제:** 동일한 키에 대한 반복적인 `SET` 명령이 AOF 파일의 크기를 무한정 키우는 '로그 비대화' 현상 발생.
-- **분석:** `HashMap`이 최신 값만 유지한다는 특성을 이용해, 현재 메모리 스냅샷을 다시 기록하면 데이터 압축이 가능함을 발견.
-- **해결:** `REWRITE` 명령 시 메모리 전체를 순회하며 최신 상태만 새 파일에 기록함으로써 저장소 효율성을 극대화함.
+### 1. The Active Cleaner Architecture (TTL)
+- **문제:** 수동 삭제(Passive)만으로는 조회되지 않는 데이터가 메모리를 영구 점유하는 위험 발생.
+- **분석:** 서버가 스스로 '시간'이라는 차원을 인지하고 주기적으로 방을 청소해야 함.
+- **해결:** `tokio::spawn`을 이용한 독립적인 **Janitor Task**를 구현하여, 메인 엔진의 성능에 영향을 주지 않으면서 메모리 회수율을 극대화함.
 
-### 2. Async Safety & Send Trait (The Scoped Lock)
-- **문제:** `REWRITE` 로직 내에서 `MutexGuard`를 소유한 채 `.await` 호출 시 컴파일러가 `Future cannot be sent between threads safely` 에러 발생.
-- **분석:** 자물쇠를 쥔 채 비동기 휴식(Suspend)에 들어가면 데드락(Deadlock) 위험이 있음을 Rust의 타입 시스템이 감지한 것임.
-- **해결:** **중괄호 `{ }` 스코프**를 사용하여 데이터 쓰기가 끝나는 즉시 자물쇠를 반납하도록 설계. 자물쇠 점유(Data Work)와 비동기 I/O(Network Response)를 완벽히 분리하여 안전성 확보.
+### 2. Cross-Layer Data Mapping (SystemTime to JSON)
+- **문제:** Rust의 고수준 `SystemTime` 객체는 표준 JSON으로 직접 직렬화(Serialize)가 불가능함.
+- **분석:** 시스템의 언어(Time Object)와 웹의 언어(Timestamp Number) 사이의 '추상화 층위' 차이 식별.
+- **해결:** `WebValue` 중간 구조체를 설계하여 `UNIX_EPOCH` 기준 초 단위(u64)로 변환 전송함으로써 인터페이스 간 호환성 확보.
 
-### 3. Atomic Rename for Data Consistency
-- **문제:** 파일 쓰기 도중 서버가 꺼질 경우 기존 AOF 파일이 손상될 위험.
-- **해결:** 임시 파일(`temp.aof`)에 먼저 기록한 뒤, 운영체제 수준의 `rename` 명령을 사용해 파일 교체를 **원자적으로(At once)** 수행하여 안전한 영속성 보장.
+### 3. Consistency of Visualization (Layout Shift)
+- **문제:** 실시간 갱신 시 데이터 길이에 따라 테이블이 흔들리고 순서가 바뀌는 가독성 저하 현상.
+- **분석:** 브라우저의 레이아웃 계산 알고리즘과 `HashMap`의 비결정적 순서에 의한 현상임을 파악.
+- **해결:** CSS의 고정 레이아웃과 JS의 `localeCompare` 정렬 로직을 결합하여 **'정적인 안정감'**과 **'동적인 데이터'**의 조화 달성.
 
 ## 🚀 How to Run
 ```bash
-# 1. 서버 실행
+# 1. 서버 실행 (Redis 포트: 6380, 웹 포트: 8080)
 cargo run
 
-# 2. Redis 클라이언트 접속
-redis-cli -p 6380
+# 2. 실시간 데이터 주입 테스트
+redis-cli -p 6380 set my_secret 1234 ex 5
 
-# 3. 최적화 테스트
-SET a 1
-SET a 2
-SET a 3
-REWRITE   # appendonly.aof가 'SET a 3' 한 줄로 압축됨
+# 3. 대시보드 확인
+# 웹 브라우저에서 http://localhost:8080 접속 (5초 뒤 데이터 삭제 확인)

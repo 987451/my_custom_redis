@@ -2,98 +2,54 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use std::fs::{OpenOptions, File};
-use std::io::{Write, BufRead, Seek, SeekFrom};
-
-// 🌟 [구조체 정의] 데이터의 수호자 AofManager
-struct AofManager {
-    // File을 Mutex로 감싸서 여러 클라이언트가 동시에 파일에 쓰려고 할 때
-    // 데이터가 뒤섞이거나 깨지는 '경합 현상'을 원천 봉쇄
-    file: Mutex<File>,
-}
-
-impl AofManager {
-    // 1️⃣ [탄생] AOF 파일을 열거나 생성하는 함수
-    fn new(path: &str) -> Self {
-        let file = OpenOptions::new()
-            .create(true)  // 파일이 없으면 새로 생성
-            .append(true)  // 기존 데이터 뒤에 덧붙임 (Append Only의 핵심).
-            .read(true)    // 읽기 권환 확보
-            .open(path)
-            .expect("AOF 파일을 열 수 없습니다.");
-
-        // 생성된 파일을 Mutex 금고에 넣고, AofManager 객체(Self)로 반환
-        Self { file: Mutex::new(file) }
-    }
-
-    // 2️⃣ [기록] 메모리에서 일어난 사건을 물리적 장치에 영원히 기록
-    fn append(&self, command: &str) {
-        // 파일을 쓰기 위해 자물쇠를 얻음
-        let mut f = self.file.lock().unwrap();
-
-        // [디버깅] 서버 터미널에 어떤 데이터가 저장되는지 실시간으로 보여줌
-        println!("📝 AOF 기록 중: {}", command);
-
-        if let Err(e) = writeln!(f, "{}", command) {
-            eprintln!("❌ AOF 쓰기 실패: {}", e);
-        }
-
-        // 🌊 [중요] 버퍼에 남아있는 데이터를 OS로 밀어냄
-        f.flush().expect("플러시 실패");
-
-        // 🛡️ [결정적 한 방] OS가 쥐고 있는 데이터를 실제 물리 하드디스크에
-        // 완전히 새기도록 강제 (정전 대비 최후의 보루)
-        f.sync_all().expect("동기화 실패");
-    }
-
-    // 3️⃣ [복구] 서버가 켜질 때 과거의 기록을 읽어 현재의 상태로 되돌림 (타임머신)
-    fn restore(&self, db: &Arc<Mutex<HashMap<String, String>>>) {
-        let mut f = self.file.lock().unwrap();
-
-        // ⏪ [되감기] 파일의 끝까지 적힌 커서를 맨 앞으로 돌려놓아야
-        // 처음부터 읽어서 복구할 수 있음
-        f.seek(SeekFrom::Start(0)).expect("파일 포인터 이동 실패");
-
-        // 한 줄씩 효율적으로 읽기 위한 버퍼 리더 생성
-        let reader = std::io::BufReader::new(&*f);
-        let mut count = 0;
-
-        println!("📂 AOF 파일로부터 데이터 복구 시도 중...");
-
-        // 파일의 모든 줄을 순회하며 '과거의 사건'들을 재현
-        for line in reader.lines() {
-            if let Ok(cmd_line) = line {
-                // 띄어쓰기 단위로 단어를 쪼개서 (예: SET name genius)
-                let parts: Vec<&str> = cmd_line.split_whitespace().collect();
-
-                // 유효한 SET 명령어인지 검사
-                if parts.len() >= 3 && parts[0].to_uppercase() == "SET" {
-                    let key = parts[1].to_string();
-                    let value = parts[2..].join(" ");
-
-                    // 메모리 DB의 자물쇠를 열고 데이터를 집어넣음
-                    let mut locked_db = db.lock().unwrap();
-                    locked_db.insert(key, value);
-                    count += 1;
-                }
-            }
-        }
-        println!("✅ {}개의 명령어를 복구했습니다.", count);
-    }
-}
-
+use std::io::{Write, BufRead, Seek};
+use crate::aof::AofManager;
+use std::time::{SystemTime, Duration};
+mod aof;
+mod web;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:6380";
-    let listener = TcpListener::bind(addr).await?;
-    let db = Arc::new(Mutex::new(HashMap::<String, String>::new()));
-
-    // 🌟 AOF 매니저 초기화 및 복구 시작
+    let db: Arc<Mutex<HashMap<String, (String, Option<SystemTime>)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let aof = Arc::new(AofManager::new("appendonly.aof"));
+
+    // 서버 시작 시 데이터 복구
     aof.restore(&db);
 
-    println!("🔥 [v4.5] 영속성(AOF)이 확보된 Redis 서버 실행 중: {}", addr);
+    // 🌟 [천재적 포인트] 웹 서버를 별도의 비동기 태스크로 실행!
+    let db_for_web = Arc::clone(&db); // 👈 여기서 클론을 해서
+    tokio::spawn(async move {
+        web::start_web_server(db_for_web).await; // 👈 웹 서버에 넘겨줘야 함!
+    });
+
+    // main 함수 내부, 웹 서버 실행 코드 근처에 추가
+    let db_for_ttl = Arc::clone(&db);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let mut keys_to_delete = Vec::new();
+            {
+                let locked_db = db_for_ttl.lock().unwrap();
+                let now = std::time::SystemTime::now();
+                for (key, (_, expiry)) in locked_db.iter() {
+                    if let Some(expire_time) = expiry {
+                        if *expire_time <= now { keys_to_delete.push(key.clone()); }
+                    }
+                }
+            } // 자물쇠 해제
+
+            if !keys_to_delete.is_empty() {
+                let mut locked_db = db_for_ttl.lock().unwrap();
+                for key in keys_to_delete { locked_db.remove(&key); }
+            }
+        }
+    });
+
+    let addr = "127.0.0.1:6380";
+    let listener = TcpListener::bind(addr).await?;
+    println!("🔥 [REDIS] 서버 실행 중: {}", addr);
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
@@ -156,13 +112,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             "REWRITE" => {
                                 {
-                                    let locked_db = db_clone.lock().unwrap(); // 자물쇠 획득
-
+                                    let locked_db = db_clone.lock().unwrap();
                                     let temp_path = "appendonly.aof.temp";
                                     let mut file = std::fs::File::create(temp_path).unwrap();
 
-                                    for (key, value) in locked_db.iter() {
-                                        let line = format!("SET {} {}\n", key, value);
+                                    // 🌟 [해결] (key, value)가 아니라 (key, (val, _expiry))로 받습니다.
+                                    for (key, (val, _expiry)) in locked_db.iter() {
+                                        let line = format!("SET {} {}\n", key, val);
                                         file.write_all(line.as_bytes()).unwrap();
                                     }
 
@@ -171,20 +127,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 writer.write_all(b"+OK AOF Rewrite Complete\r\n").await.unwrap();
                             }
 
+                            // [SET 명령어 내부에서]
                             "SET" => {
                                 if args.len() >= 3 {
                                     let key = args[1].clone();
-                                    let value = args[2..].join(" ");
+                                    let value = args[2].clone();
+                                    let mut expiry = None;
 
-                                    // 1. 메모리에 저장
-                                    {
-                                        let mut locked_db = db_clone.lock().unwrap();
-                                        locked_db.insert(key.clone(), value.clone());
+                                    // SET key value EX 10 파싱
+                                    if args.len() >= 5 && args[3].to_uppercase() == "EX" {
+                                        if let Ok(secs) = args[4].parse::<u64>() {
+                                            expiry = Some(SystemTime::now() + Duration::from_secs(secs));
+                                        }
                                     }
 
-                                    // 2. 🌟 파일에 기록 (영속성 확보)
-                                    // 나중에 복구하기 쉬운 형태로 기록합니다.
-                                    let log_cmd = format!("SET {} {}", key, value);
+                                    {
+                                        let mut locked_db = db_clone.lock().unwrap();
+                                        locked_db.insert(key.clone(), (value.clone(), expiry));
+                                    }
+
+                                    // AOF 기록 시에도 EX 정보 포함 (복구 위해 필요)
+                                    let log_cmd = if let Some(_) = expiry {
+                                        format!("SET {} {} EX {}", key, value, args[4])
+                                    } else {
+                                        format!("SET {} {}", key, value)
+                                    };
                                     aof_clone.append(&log_cmd);
 
                                     writer.write_all(b"+OK\r\n").await.unwrap();
@@ -193,14 +160,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "GET" => {
                                 if args.len() >= 2 {
                                     let key = &args[1];
+                                    let mut is_expired = false;
+
                                     let response = {
                                         let locked_db = db_clone.lock().unwrap();
                                         match locked_db.get(key) {
-                                            // Redis 표준 Bulk String 응답: $길이\r\n데이터\r\n
-                                            Some(v) => format!("${}\r\n{}\r\n", v.len(), v),
-                                            None => "$-1\r\n".to_string(), // Redis 표준 nil 응답
+                                            // 1. 키가 존재할 때
+                                            Some((value, expiry)) => {
+                                                match expiry {
+                                                    // 1-1. 만료 시간이 있을 때
+                                                    Some(expire_time) => {
+                                                        if *expire_time <= SystemTime::now() {
+                                                            is_expired = true;
+                                                            "$-1\r\n".to_string() // 만료됨
+                                                        } else {
+                                                            format!("${}\r\n{}\r\n", value.len(), value)
+                                                        }
+                                                    }
+                                                    // 1-2. 만료 시간이 없을 때 (영구 저장)
+                                                    None => format!("${}\r\n{}\r\n", value.len(), value),
+                                                }
+                                            }
+                                            // 2. 키가 없을 때
+                                            None => "$-1\r\n".to_string(),
                                         }
                                     };
+
+                                    if is_expired {
+                                        let mut locked_db = db_clone.lock().unwrap();
+                                        locked_db.remove(key);
+                                    }
                                     writer.write_all(response.as_bytes()).await.unwrap();
                                 }
                             }
