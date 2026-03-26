@@ -1,45 +1,106 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}; // AsyncReadExt 추가
 use tokio::net::TcpListener;
-use std::io::{Write, BufRead, Seek};
-use crate::aof::AofManager;
 use std::time::{SystemTime, Duration};
+use once_cell::sync::OnceCell;
+
+// 모듈 선언
 mod aof;
 mod web;
+mod semantic;
+
+use aof::{AofManager, DbState}; // DbState 가져오기
+use semantic::{SemanticEngine, cosine_similarity};
+
+static ENGINE: OnceCell<Arc<SemanticEngine>> = OnceCell::new();
+
+// 1. 엔진 타입을 Option으로 정의하여 준비 상태를 관리합니다.
+type SharedEngine = Arc<Mutex<Option<Arc<SemanticEngine>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db: Arc<Mutex<HashMap<String, (String, Option<SystemTime>)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let db: DbState = Arc::new(Mutex::new(HashMap::new()));
     let aof = Arc::new(AofManager::new("appendonly.aof"));
 
-    // 서버 시작 시 데이터 복구
-    aof.restore(&db);
+    // 🌟 [수정] 엔진을 처음에 None으로 생성 (즉시 반환)
+    let engine: SharedEngine = Arc::new(Mutex::new(None));
 
-    // 🌟 [천재적 포인트] 웹 서버를 별도의 비동기 태스크로 실행!
-    let db_for_web = Arc::clone(&db); // 👈 여기서 클론을 해서
+    // main.rs의 복구 로직 부분
+    println!("⏳ 데이터 지능형 복구 시도...");
+
+    // 1단계: 바이너리 스냅샷 로드 (매우 빠름)
+    let snapshot_loaded = aof.fast_restore(&db);
+
+    // 2단계: AOF 로그를 통한 증분 복구 (스냅샷 이후의 데이터를 채워줌)
+    // 이미 스냅샷에 있는 데이터는 덮어쓰기 방식으로 최신화됨
+    println!("⏳ 최신 변경사항(AOF) 반영 중...");
+    aof.restore(&db, &engine);
+
+    if !snapshot_loaded {
+        println!("💡 첫 실행이므로 초기 스냅샷을 생성합니다.");
+        aof.create_snapshot(&db);
+    }
+
+    println!("✅ 복구 완료. 모든 데이터가 최신 상태입니다.");
+
+    // 3. 🌟 [천재적 수정] AI 엔진을 백그라운드에서 별도로 로드
+    let engine_for_loading = Arc::clone(&engine);
+    let db_for_restore = Arc::clone(&db);
+    let aof_for_restore = Arc::clone(&aof);
+
     tokio::spawn(async move {
-        web::start_web_server(db_for_web).await; // 👈 웹 서버에 넘겨줘야 함!
+        println!("🧠 AI 엔진 배경 예열 시작 (노트북 자원 최적화)...");
+
+        if let Ok(real_engine) = SemanticEngine::new() {
+            let eng_arc = Arc::new(real_engine);
+
+            // 🌟 [순서 중요] 1. 먼저 전역 상태에 엔진을 등록합니다.
+            {
+                let mut opt = engine_for_loading.lock().unwrap();
+                *opt = Some(Arc::clone(&eng_arc));
+            }
+            println!("✅ AI 지능 활성화 완료.");
+
+            // 🌟 [순서 중요] 2. 이제 포장지(engine_for_loading)를 통째로 넘깁니다.
+            // 내부에서 Option이 Some인 것을 확인하고 복구를 진행할 것입니다.
+            {
+                let locked_db = db_for_restore.lock().unwrap();
+                if locked_db.is_empty() {
+                    println!("⏳ 텍스트 로그(AOF) 복구 중...");
+                    // &eng_arc가 아니라 &engine_for_loading을 넘깁니다!
+                    aof_for_restore.restore(&db_for_restore, &engine_for_loading);
+                }
+            }
+            println!("✨ 지능형 복구 프로세스 종료.");
+        }
     });
 
-    // main 함수 내부, 웹 서버 실행 코드 근처에 추가
+    // 4. 웹 서버 실행 (엔진 상태 공유)
+    let db_for_web = Arc::clone(&db);
+    let engine_for_web = Arc::clone(&engine); // Option 타입 엔진 전달
+    let aof_for_web = Arc::clone(&aof);
+    tokio::spawn(async move {
+        // web::start_web_server 내부에서 engine 타입을 대응하도록 수정 필요
+        web::start_web_server(db_for_web, engine_for_web, aof_for_web).await;
+    });
+
+    // 4. 🌟 [해결] TTL 관리 로직 (클론 먼저 생성!)
     let db_for_ttl = Arc::clone(&db);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
             let mut keys_to_delete = Vec::new();
             {
                 let locked_db = db_for_ttl.lock().unwrap();
-                let now = std::time::SystemTime::now();
-                for (key, (_, expiry)) in locked_db.iter() {
+                let now = SystemTime::now();
+                for (key, (_, expiry, _)) in locked_db.iter() {
                     if let Some(expire_time) = expiry {
                         if *expire_time <= now { keys_to_delete.push(key.clone()); }
                     }
                 }
-            } // 자물쇠 해제
-
+            }
             if !keys_to_delete.is_empty() {
                 let mut locked_db = db_for_ttl.lock().unwrap();
                 for key in keys_to_delete { locked_db.remove(&key); }
@@ -49,12 +110,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "127.0.0.1:6380";
     let listener = TcpListener::bind(addr).await?;
-    println!("🔥 [REDIS] 서버 실행 중: {}", addr);
+    println!("🚀 [REDIS + AI] 서버 가동! 포트: {}", addr);
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
         let db_clone = Arc::clone(&db);
-        let aof_clone = Arc::clone(&aof); // 클론 생성
+        let aof_clone = Arc::clone(&aof);
+        let engine_clone = Arc::clone(&engine); // Option 타입
 
         tokio::spawn(async move {
             let (reader, mut writer) = socket.split();
@@ -63,145 +125,157 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 line.clear();
-                // 1. RESP의 첫 줄을 읽습니다 (예: *3\r\n)
-                match buf_reader.read_line(&mut line).await {
-                    Ok(0) => return,
-                    Ok(_) => {
-                        let header = line.trim();
-                        if !header.starts_with('*') {
-                            // 🌟 팁: 만약 텔넷처럼 일반 텍스트가 들어오면 기존 방식으로 처리하게 할 수도 있음
-                            // 여기서는 진짜 Redis 방식(배열 시작 '*')만 처리
-                            continue;
-                        }
+                // 1. 배열 개수 읽기 (*3\r\n)
+                if let Err(_) = buf_reader.read_line(&mut line).await { break; }
+                if line.is_empty() { break; }
 
-                        // 🌟 [2단계: 배열의 개수 파악] "몇 개의 단어가 들어옴?"
-                        // header가 "*3\r\n"이라면, [1..]을 통해 "*"를 떼고 "3"만 남김
-                        // .parse().unwrap_or(0)를 통해 문자열 "3"을 숫자 3(usize)으로 바꿈
-                        let num_elements: usize = header[1..].parse().unwrap_or(0);
+                let header = line.trim();
+                if !header.starts_with('*') { continue; }
+                let num_elements: usize = header[1..].parse().unwrap_or(0);
 
-                        let mut args = Vec::new();
+                let mut args = Vec::new();
+                for _ in 0..num_elements {
+                    // A. 데이터 길이 읽기 ($15\r\n)
+                    line.clear();
+                    if let Err(_) = buf_reader.read_line(&mut line).await { break; }
+                    if !line.starts_with('$') { continue; }
+                    let byte_len: usize = line.trim()[1..].parse().unwrap_or(0);
 
-                        // 🌟 [3단계: 개수만큼 반복하며 실제 데이터를 읽기]
-                        for _ in 0..num_elements {
-                            // A. 첫 번째 읽기: "$3\r\n" 같은 '길이 정보' 줄을 읽어서 버림
-                            line.clear();
-                            buf_reader.read_line(&mut line).await.unwrap();
+                    // B. [핵심] 한글 처리를 위해 바이트 단위로 정확히 읽기
+                    let mut buffer = vec![0u8; byte_len];
+                    if let Err(_) = buf_reader.read_exact(&mut buffer).await { break; }
 
-                            // B. 두 번째 읽기: 진짜 데이터(예: "SET\r\n")가 들어있는 줄을 읽음
-                            line.clear();
-                            buf_reader.read_line(&mut line).await.unwrap();
+                    // C. 뒤에 붙는 \r\n 버리기
+                    let mut crlf = [0u8; 2];
+                    let _ = buf_reader.read_exact(&mut crlf).await;
 
-                            // 양옆의 공백과 줄바꿈(\r\n)을 제거하고 바구니(args)에 넣음
-                            args.push(line.trim().to_string());
-                        }
+                    args.push(String::from_utf8_lossy(&buffer).into_owned());
+                }
 
-                        // 🌟 [검증 및 명령어 추출]
-                        // 아무것도 읽지 못했다면(빈 명령어) 다음 손님을 기다림
-                        if args.is_empty() { continue; }
+                if args.is_empty() { continue; }
+                let command = args[0].to_uppercase();
 
-                        // 첫 번째 단어(args[0])가 항상 '명령어'
-                        let command = args[0].to_uppercase();
-
-                        // 4. 명령어 실행 (우리가 만든 로직 그대로!)
-                        match command.as_str() {
-                            "SHUTDOWN" => {
-                                writer.write_all(b"+OK server end...\r\n").await.unwrap();
-                                // 🌟 프로그램을 즉시 종료시키는 마법의 코드
-                                std::process::exit(0);
+                match command.as_str() {
+                    "REWRITE" => {
+                        // 🌟 [수정] 원본 db가 아니라 루프에서 넘겨받은 db_clone을 사용합니다.
+                        // 다시 클론할 필요 없이 바로 넘겨주면 됩니다.
+                        aof_clone.rewrite(&db_clone);
+                        let _ = writer.write_all(b"+OK AOF Compacted\r\n").await;
+                    }
+                    "SHUTDOWN" => {
+                        println!("🛑 서버 종료 중... 스냅샷을 생성합니다.");
+                        aof_clone.create_snapshot(&db_clone); // 광속 부팅용 바이너리 저장
+                        aof_clone.rewrite(&db_clone);        // 텍스트 로그 최적화
+                        let _ = writer.write_all(b"+OK Bye\r\n").await;
+                        std::process::exit(0);
+                    }
+                    "SET" => {
+                        if args.len() >= 3 {
+                            let key = args[1].clone();
+                            let value = args[2].clone();
+                            let embedding = {
+                                let opt = engine_clone.lock().unwrap();
+                                if let Some(eng) = opt.as_ref() {
+                                    eng.embed(&value).unwrap_or_else(|_| vec![0.0; 384])
+                                } else {
+                                    vec![0.0; 384]
+                                }
+                            };
+                            let mut expiry = None;
+                            if args.len() >= 5 && args[3].to_uppercase() == "EX" {
+                                if let Ok(secs) = args[4].parse::<u64>() {
+                                    expiry = Some(SystemTime::now() + Duration::from_secs(secs));
+                                }
                             }
 
-                            "REWRITE" => {
+                            {
+                                // 🌟 이미 루프 밖에서 클론된 db_clone을 사용 중이므로 안전합니다.
+                                let mut locked_db = db_clone.lock().unwrap();
+                                locked_db.insert(key.clone(), (value.clone(), expiry, embedding.clone()));
+                            }
+
+                            aof_clone.append_with_vec(&key, &value, expiry, &embedding);
+                            let _ = writer.write_all(b"+OK (AI-Ready & Saved)\r\n").await;
+                        }
+                    }
+                    "SGET" => {
+                        if args.len() >= 2 {
+                            let query = &args[1];
+                            // 1. 임계값(Threshold) 파싱
+                            let threshold: f32 = args.get(2)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0.8);
+
+                            // 2. 🌟 [지능형 엔진 추출] Option 금고 열기
+                            let maybe_engine = {
+                                let lock = engine_clone.lock().unwrap();
+                                // 내부의 Arc<SemanticEngine>을 클론하여 락 시간을 최소화함
+                                lock.as_ref().cloned()
+                            };
+
+                            if let Some(eng) = maybe_engine {
+                                // 3. 질문 임베딩 (락 밖에서 수행하여 성능 최적화)
+                                let query_vec = match eng.embed(query) {
+                                    Ok(vec) => vec,
+                                    Err(e) => {
+                                        eprintln!("❌ [SGET] 임베딩 실패: {}", e);
+                                        let _ = writer.write_all(b"-ERR Embedding failed\r\n").await;
+                                        continue;
+                                    }
+                                };
+
+                                // 4. 시맨틱 검색 수행
+                                let mut best_match = None;
+                                let mut max_score = -1.0;
                                 {
                                     let locked_db = db_clone.lock().unwrap();
-                                    let temp_path = "appendonly.aof.temp";
-                                    let mut file = std::fs::File::create(temp_path).unwrap();
+                                    for (val, _, emb) in locked_db.values() {
+                                        // 데이터가 아직 인덱싱되지 않은 경우(기본 벡터) 건너뜀
+                                        if emb.iter().all(|&x| x == 0.0) { continue; }
 
-                                    // 🌟 [해결] (key, value)가 아니라 (key, (val, _expiry))로 받습니다.
-                                    for (key, (val, _expiry)) in locked_db.iter() {
-                                        let line = format!("SET {} {}\n", key, val);
-                                        file.write_all(line.as_bytes()).unwrap();
-                                    }
-
-                                    std::fs::rename(temp_path, "appendonly.aof").unwrap();
-                                }
-                                writer.write_all(b"+OK AOF Rewrite Complete\r\n").await.unwrap();
-                            }
-
-                            // [SET 명령어 내부에서]
-                            "SET" => {
-                                if args.len() >= 3 {
-                                    let key = args[1].clone();
-                                    let value = args[2].clone();
-                                    let mut expiry = None;
-
-                                    // SET key value EX 10 파싱
-                                    if args.len() >= 5 && args[3].to_uppercase() == "EX" {
-                                        if let Ok(secs) = args[4].parse::<u64>() {
-                                            expiry = Some(SystemTime::now() + Duration::from_secs(secs));
+                                        let score = cosine_similarity(&query_vec, emb);
+                                        if score > threshold && score > max_score {
+                                            max_score = score;
+                                            best_match = Some(val.clone());
                                         }
                                     }
-
-                                    {
-                                        let mut locked_db = db_clone.lock().unwrap();
-                                        locked_db.insert(key.clone(), (value.clone(), expiry));
-                                    }
-
-                                    // AOF 기록 시에도 EX 정보 포함 (복구 위해 필요)
-                                    let log_cmd = if let Some(_) = expiry {
-                                        format!("SET {} {} EX {}", key, value, args[4])
-                                    } else {
-                                        format!("SET {} {}", key, value)
-                                    };
-                                    aof_clone.append(&log_cmd);
-
-                                    writer.write_all(b"+OK\r\n").await.unwrap();
                                 }
-                            }
-                            "GET" => {
-                                if args.len() >= 2 {
-                                    let key = &args[1];
-                                    let mut is_expired = false;
 
-                                    let response = {
-                                        let locked_db = db_clone.lock().unwrap();
-                                        match locked_db.get(key) {
-                                            // 1. 키가 존재할 때
-                                            Some((value, expiry)) => {
-                                                match expiry {
-                                                    // 1-1. 만료 시간이 있을 때
-                                                    Some(expire_time) => {
-                                                        if *expire_time <= SystemTime::now() {
-                                                            is_expired = true;
-                                                            "$-1\r\n".to_string() // 만료됨
-                                                        } else {
-                                                            format!("${}\r\n{}\r\n", value.len(), value)
-                                                        }
-                                                    }
-                                                    // 1-2. 만료 시간이 없을 때 (영구 저장)
-                                                    None => format!("${}\r\n{}\r\n", value.len(), value),
-                                                }
-                                            }
-                                            // 2. 키가 없을 때
-                                            None => "$-1\r\n".to_string(),
-                                        }
-                                    };
+                                // 5. 결과 반환
+                                let response = match best_match {
+                                    Some(val) => format!("${}\r\n{}\r\n", val.as_bytes().len(), val),
+                                    None => "$-1\r\n".to_string(), // 유사한 데이터 없음
+                                };
+                                let _ = writer.write_all(response.as_bytes()).await;
 
-                                    if is_expired {
-                                        let mut locked_db = db_clone.lock().unwrap();
-                                        locked_db.remove(key);
-                                    }
-                                    writer.write_all(response.as_bytes()).await.unwrap();
-                                }
-                            }
-                            "PING" => {
-                                writer.write_all(b"+PONG\r\n").await.unwrap();
-                            }
-                            _ => {
-                                writer.write_all(b"-ERR unknown command\r\n").await.unwrap();
+                            } else {
+                                // 6. 🌟 [피드백] 엔진이 로딩 중일 때의 응답
+                                let _ = writer.write_all(b"-ERR AI engine is still booting. Please try again in a few seconds.\r\n").await;
                             }
                         }
                     }
-                    Err(_) => return,
+                    "GET" => {
+                        if args.len() >= 2 {
+                            let key = &args[1];
+                            let response = {
+                                let locked_db = db_clone.lock().unwrap();
+                                match locked_db.get(key) {
+                                    Some((value, expiry, _)) => {
+                                        if let Some(exp) = expiry {
+                                            if *exp <= SystemTime::now() { "$-1\r\n".to_string() }
+                                            else { format!("${}\r\n{}\r\n", value.as_bytes().len(), value) }
+                                        } else {
+                                            format!("${}\r\n{}\r\n", value.as_bytes().len(), value)
+                                        }
+                                    }
+                                    None => "$-1\r\n".to_string(),
+                                }
+                            };
+                            let _ = writer.write_all(response.as_bytes()).await;
+                        }
+                    }
+                    "PING" => { let _ = writer.write_all(b"+PONG\r\n").await; }
+                    _ => { let _ = writer.write_all(b"-ERR unknown command\r\n").await; }
                 }
             }
         });

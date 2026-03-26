@@ -1,1 +1,7 @@
 /target
+/models/
+*.safetensors
+*.json
+*.bin
+*.temp
+appendonly.aof
