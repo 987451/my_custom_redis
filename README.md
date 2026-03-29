@@ -1,100 +1,92 @@
-﻿
-
-# 🚀 My-Custom-Redis V6.0: Cognitive Persistent Engine
+﻿# 🚀 My-Custom-Redis V7.0: Sharded Intelligence Mesh
 
 [![Rust](https://img.shields.io/badge/rust-v1.75+-orange.svg)](https://www.rust-lang.org/)
-[![AI](https://img.shields.io/badge/BERT-all--MiniLM--L6--v2-blue.svg)](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-[![Persistence](https://img.shields.io/badge/Persistence-Hybrid_Snapshot-green.svg)](#-2-광속-하이브리드-복구-dual-layer-persistence)
+[![Search](https://img.shields.io/badge/Search-HNSW_$O(\log_N)$-red.svg)](#-2-hnsw-계층형-그래프-인덱싱)
+[![Concurrency](https://img.shields.io/badge/Concurrency-16_Shards_Lock-blue.svg)](#-1-16차선-잠금-샤딩-아키텍처)
+[![Self-Healing](https://img.shields.io/badge/Self--Healing-Auto--Migration-green.svg)](#-3-자율-정화-및-광속-복구-시스템)
 
-**My-Custom-Redis**는 단순한 Key-Value 저장소를 넘어, 데이터의 **'의미(Meaning)'**를 이해하고 **'기억의 완벽한 보존'**을 실현한 차세대 지능형 벡터 데이터베이스 엔진입니다. Rust의 안전성과 BERT 인공지능 모델의 인지 능력을 결합하여 일반 노트북에서도 상용급 시맨틱 검색 환경을 제공합니다.
-
----
-
-## 🛠 Tech Stack (The Architecture of Intelligence)
-
--   **AI Brain:** [Candle](https://github.com/huggingface/candle) (Pure Rust ML Framework) + BERT (all-MiniLM-L6-v2)
--   **Core Engine:** Rust (Memory Safety & Zero-cost Abstractions)
--   **High-Speed Persistence:** [Bincode 1.3](https://github.com/bincode-org/bincode) (Binary Snapshot) + AOF (Hybrid Logging)
--   **Async Pipeline:** Tokio (Lazy AI Loading & Multi-protocol Handling)
--   **Web Studio:** Axum + Serde (Real-time Semantic Monitoring & Data Injector)
+**My-Custom-Redis**는 단일 잠금(Global Lock)의 한계를 돌파하고, 데이터들 사이의 '의미적 연결'을 스스로 구축하는 **초병렬 계층형 벡터 데이터베이스**입니다. 단순한 데이터 저장을 넘어, 지능형 알고리즘과 저수준 시스템 최적화를 통해 '살아있는 지식 그리드'를 노트북 환경에서 완벽히 실현했습니다.
 
 ---
 
-## ✨ AI-Native 혁신 기능 (V6.0)
+## 🛠 아키텍처의 정수 (The Mesh Architecture)
 
-### 🧠 1. 시맨틱 검색 엔진 (`SGET`)
-단순한 문자열 일치(`GET`)가 아닌, 문장의 맥락과 의도를 파악하여 답변을 찾아냅니다.
--   **의미론적 매칭:** "사과는 맛있다"를 저장하고 "빨간색 달콤한 과일"로 검색해도 결과를 도출합니다.
--   **임계값 제어:** 유사도 점수(Threshold)를 직접 설정하여 검색의 정밀도를 조절할 수 있습니다.
+- **Vector Indexing:** **HNSW (Hierarchical Navigable Small World)** 직접 구현 ($O(N)$ 순회 탈출, $O(\log N)$ 고속 탐색)
+- **Concurrency Engine:** **16-Way Lock Sharding** (전역 Mutex 병목 제거, 물리적 병렬 처리 극대화)
+- **Persistence Layer:** **Hybrid Bincode Snapshot + AOF** (메모리 상태와 사건 기록의 완벽한 조화)
+- **Self-Evolution:** **Auto-Migration Engine** (복구 시 구형 로그 감지 및 실시간 벡터화/컴팩션 수행)
 
-### ⚡ 2. 광속 하이브리드 복구 (Dual-Layer Persistence)
-바이너리 상태 이미지와 텍스트 로그를 결합하여 데이터 유실 0%와 부팅 속도 1,000배 향상을 동시에 달성했습니다.
--   **Binary Snapshot:** `snapshot.bin`을 통해 수천 개의 지식을 0.1초 만에 메모리에 복원합니다.
--   **Incremental AOF:** 스냅샷 이후의 변경사항만 `appendonly.aof`에서 읽어오는 증분 복구 알고리즘을 채택했습니다.
+---
 
-### 🌊 3. 비동기 지능형 예열 (Lazy AI Warm-up)
-90MB의 거대 AI 모델 로딩이 전체 시스템의 병목이 되지 않도록 설계되었습니다.
--   **즉시 가용성:** 서버는 즉시 가동되어 일반 요청을 처리하며, AI 엔진은 백그라운드에서 조용히 깨어납니다.
--   **지능형 폴백:** 엔진 준비 전 데이터 입력 시에도 `Pending` 상태로 안전하게 저장된 후, 지능이 활성화되는 즉시 인덱싱됩니다.
+## ✨ 핵심 혁신 기능 (Key Innovations)
 
-### 🌐 4. 시맨틱 웹 스튜디오 (Advanced Admin Console)
-터미널의 인코딩 한계를 완전히 극복한 지능형 관리 도구입니다.
--   **UTF-8 Native:** 한글 깨짐 걱정 없는 웹 기반 데이터 주입 폼(Form) 탑재.
--   **Visual Intelligence:** 각 데이터가 벡터 공간에서 준비되었는지(`● Ready`) 실시간으로 시각화합니다.
+### 🛣 1. 16차선 잠금 샤딩 (Lock Sharding)
+데이터베이스의 심장을 16개로 분할하여 단일 자물쇠에 의한 병목을 근본적으로 제거했습니다.
+- **병렬성 극대화:** 키의 해시값을 기반으로 데이터를 16개의 독립된 샤드로 분리.
+- **논블로킹 운영:** 한 샤드가 무거운 AI 연산을 하는 동안에도 나머지 15개 샤드는 멈춤 없이 초고속 Read/Write 수행.
+
+### 🏹 2. HNSW 계층형 그래프 인덱싱
+모든 데이터를 전수조사하는 시대는 끝났습니다. 데이터들 사이에 '지능적 고속도로'를 건설했습니다.
+- **로그 스케일 탐색:** 데이터 간의 유사도를 연결선(Edge)으로 구성하여 고차원 그래프망 구축.
+- **성능 비약:** 데이터가 수만 개로 늘어나도 단 수십 번의 점프만으로 최적의 답을 도출 ($O(N) \rightarrow O(\log N)$).
+
+### 🧹 3. 자율 정화 및 광속 복구 시스템
+과거의 부채(구형 데이터)를 스스로 청산하고 진화하는 인프라를 구축했습니다.
+- **Auto-Migration:** 부팅 시 벡터가 없는 구형 로그(`SET`)를 발견하면 즉시 AI 임베딩 수행 및 최신 `VEC_SET` 포맷으로 자동 갱신.
+- **Fast Restore:** 바이너리 스냅샷 로드 후 AOF의 증분 데이터만 반영하여 부팅 속도를 0.1초대로 단축.
+
+### 🌐 4. 시맨틱 웹 스튜디오 V2
+단순한 뷰어를 넘어선 강력한 데이터 오케스트레이션 콘솔입니다.
+- **실시간 Key 필터링:** 16개 샤드를 병렬 스캔하여 수천 개의 키 중 원하는 것만 즉시 추출.
+- **지능형 상태 모니터링:** 각 데이터의 벡터화 상태(`● Ready`) 및 임베딩 미리보기 지원.
 
 ---
 
 ## 🔥 Genius Troubleshooting & Architecture Insights
 
-### 1. The Persistence Duality (상태와 사건의 조화)
--   **문제:** AOF 로그가 길어질수록 매번 AI 임베딩을 다시 계산하느라 부팅 속도가 기하급수적으로 느려지는 병목 발생.
--   **분석:** '과거의 사건 기록'과 '현재의 최종 상태'를 물리적으로 분리하여 계산 중복을 제거해야 함.
--   **해결:** `Bincode`를 이용한 바이너리 스냅샷(RDB 방식)을 도입하여 계산된 벡터값을 직접 저장하고, AOF는 최신 변경분만 담는 하이브리드 구조로 전환하여 **부팅 시간의 시간 복잡도를 $O(N)$에서 $O(1)$에 가깝게** 낮춤.
+### 1. From Sequential to Parallel (확장성의 해방)
+- **문제:** 데이터가 늘어날수록 전역 락 경합과 로그 복구 연산 부하로 인해 시스템 응답성이 저하됨.
+- **분석:** 단일 차원의 자물쇠 구조는 멀티코어 노트북의 자원을 100% 활용하지 못하는 설계적 결함임을 식별.
+- **해결:** 데이터 저장소를 16분할 샤딩하고, HNSW 그래프 인덱싱을 도입하여 **'지능의 규모화(Scalability of Intelligence)'** 성공.
 
-### 2. Async Ownership Management (비동기 소유권 설계)
--   **문제:** AI 엔진을 비동기적으로 로드할 때 `move` 키워드로 인해 메인 루프의 소유권이 박탈되는 Rust 특유의 소유권 에러.
--   **분석:** 지능(Engine)은 하나지만, 이를 필요로 하는 신체 부위(Web, CLI, TTL)는 여러 곳임.
--   **해결:** `Arc<Mutex<Option<Arc<T>>>>` 3중 래핑 구조를 설계하여, **'복제된 통로'**를 통해 모든 비동기 태스크가 하나의 뇌를 안전하게 공유하고 준비 상태를 실시간 감지하도록 구현.
+### 2. The Duality of Memory (잠금과 비동기의 공존)
+- **문제:** 비동기 태스크(`.await`) 중 MutexGuard를 점유하여 발생하는 Rust 특유의 `Send` 에러(스레드 간 이동 불가).
+- **분석:** 자물쇠를 쥔 채로 비동기 대기에 들어가는 행위가 런타임의 질서를 파괴할 수 있음을 인지.
+- **해결:** **'중괄호 스코핑 전략(Brace Scoping Strategy)'**을 통해 데이터를 처리하는 '순간'에만 잠금을 획득하고 즉시 해제하여, 비동기 I/O와 데이터 무결성을 완벽히 조화시킴.
 
-### 3. Encoding-Agile Gateway (인코딩 스트레스 제거)
--   **문제:** Windows 터미널(CP949)의 한계로 인해 서버에 깨진 바이트가 전달되어 시스템이 `panic`에 빠지는 현상.
--   **분석:** 인터페이스(CLI)의 한계가 엔진(Server)의 안정성을 해쳐서는 안 됨. 가장 표준화된 통로인 웹 브라우저를 활용해야 함.
--   **해결:** 웹 기반 데이터 주입 API(POST)를 신설하고 브라우저의 완벽한 UTF-8 지원을 활용하여, **환경에 구애받지 않는 무결점 지식 주입 경로** 확보.
+### 3. Log Legacy Modernization (지속 가능한 영속성)
+- **문제:** 중복된 로그 기록과 AI 연산이 필요한 구형 텍스트 로그가 부팅 속도를 저해.
+- **분석:** 데이터베이스의 영속성은 '단순한 과거의 나열'이 아닌 '최정예 상태의 보존'이어야 함.
+- **해결:** `restore` 함수가 마이그레이션 필요성을 스스로 판단하고, 부팅 직후 `REWRITE`를 자동 실행하여 시스템 스스로를 최신 상태로 유지하는 **자율 정화 루틴** 설계.
 
 ---
 
-## 🚀 How to Run
+## 🚀 시작하기 (How to Run)
 
-### 1. 사전 준비 (Prerequisites)
--   [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ 데스크톱 개발 워크로드 필수)
--   Rust 툴체인 (v1.75 이상 권장)
+### 1. 사전 준비
+- **OS:** Windows / Linux / macOS (C++ Build Tools 필수)
+- **Rust:** v1.75 이상 권장
+- **Models:** `models/all-minilm-l6-v2/` 폴더 내에 `config.json`, `tokenizer.json`, `model.safetensors` 배치.
 
-### 2. AI 모델 배치
-`models/all-minilm-l6-v2/` 경로를 생성하고 HuggingFace에서 다운로드한 다음 파일들을 위치시킵니다.
--   `config.json`
--   `tokenizer.json`
--   `model.safetensors` (파일명 확인 필수: `model.safetensors`)
-
-### 3. 서버 가동
+### 2. 실행
 ```bash
-# 최적화된 성능을 위해 release 모드로 실행을 권장합니다.
+# 최고의 성능을 위해 release 모드 실행을 강력 권장합니다.
 cargo run --release
 ```
 
-### 4. 시맨틱 테스트
-1.  웹 브라우저 접속: `http://localhost:8080`
-2.  데이터 입력: Key: `rust_safe`, Value: `Rust는 메모리 안전성이 뛰어납니다.`
-3.  시맨틱 검색 테스트: `SGET "안전한 프로그래밍 언어"` -> **검색 성공!**
+### 3. 확인 및 테스트
+- **Web UI**: http://localhost:8080 접속하여 실시간 Key 필터링 체험.
+- **Auto-Purge**: 구형 데이터가 담긴 AOF로 시작 시, 로그가 자동으로 압축/현대화되는 모습 확인.
+- **High Concurrency**: 16개 샤드에 분산 저장되는 데이터를 통해 동시 처리 성능 체감.
+
+--- 
+
+## 💡 진화 로드맵 (Future Vision)
+- **Distributed Mesh**: 노트북 한 대를 넘어 수십 대의 노드를 묶는 분산 지능형 네트워크.
+- **1-Bit Quantization**: 벡터를 1비트로 압축하여 메모리 효율을 32배 절감하는 극한의 다이어트.
+- **RAG-as-a-Service SDK**: 로컬 LLM이 이 Redis를 전용 장기 기억 장치로 즉시 사용할 수 있는 라이브러리 배포.
 
 ---
 
-## 💡 Project Evolution Idea (V7.0 Roadmap)
--   **Semantic Sharding:** 지식의 주제에 따라 메모리 샤드를 나누어 검색 속도를 무한대로 확장.
--   **Binary Quantization:** 벡터를 1비트로 압축하여 일반 노트북 한 대에 수억 개의 지식 저장.
--   **RAG Hub SDK:** 로컬 LLM(Ollama 등)이 이 Redis를 '외부 기억 장치'로 즉시 사용할 수 있는 전용 라이브러리 배포.
-
----
-
-**Author:** [987451]
-**License:** MIT
-**"데이터는 기억을 넘어, 이제 의미로 존재합니다."**
+**Author: [987451]** | **License: MIT**
+**"데이터는 단순히 저장되지 않습니다. 스스로 연결되고 정화되며, 지능으로 존재합니다.**

@@ -1,13 +1,59 @@
-﻿// src/aof.rs
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::fs::{OpenOptions, File};
-use std::io::{Write, Read, BufRead, Seek, SeekFrom}; // Read 추가
+use std::io::{Write, Read, BufRead, Seek, SeekFrom};
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use crate::semantic::SemanticEngine;
-use bincode; // Cargo.toml에 bincode = "1.3" 확인
+use bincode;
+use serde::{Serialize, Deserialize};
+use crate::hnsw::HnswIndex;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::io::{BufWriter};
 
-pub type DbState = Arc<Mutex<HashMap<String, (String, Option<SystemTime>, Vec<f32>)>>>;
+// 🌟 [혁신] 샤드 개수 설정 (보통 CPU 코어 수의 배수로 설정)
+pub const NUM_SHARDS: usize = 16;
+
+#[derive(Serialize, Deserialize)]
+pub struct Shard {
+    pub kv: HashMap<String, (String, Option<SystemTime>, Vec<f32>)>,
+    pub hnsw: HnswIndex,
+}
+
+// 🌟 [혁신] 스냅샷 저장을 위한 중간 구조체 (Mutex는 직렬화가 안 되기 때문)
+#[derive(Serialize, Deserialize)]
+pub struct FullStateDump {
+    pub shards_data: Vec<Shard>,
+}
+
+pub struct FullState {
+    pub shards: Vec<Arc<Mutex<Shard>>>,
+}
+
+// 🌟 이제 DbState는 Arc<FullState> 입니다. (FullState 자체가 락을 품고 있음)
+pub type DbState = Arc<FullState>;
+
+impl FullState {
+    pub fn new() -> Self {
+        let mut shards = Vec::with_capacity(NUM_SHARDS);
+        for _ in 0..NUM_SHARDS {
+            shards.push(Arc::new(Mutex::new(Shard {
+                kv: HashMap::new(),
+                hnsw: HnswIndex::new(),
+            })));
+        }
+        FullState { shards }
+    }
+
+    // 🌟 [핵심] 키를 해싱하여 16개의 샤드 중 하나를 결정합니다.
+    pub fn get_shard(&self, key: &str) -> Arc<Mutex<Shard>> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let hash = hasher.finish();
+        let index = (hash as usize) % NUM_SHARDS;
+        Arc::clone(&self.shards[index])
+    }
+}
 
 pub struct AofManager {
     file: Mutex<File>,
@@ -21,36 +67,43 @@ impl AofManager {
         Self { file: Mutex::new(file) }
     }
 
-    // 🌟 [추가] 바이너리 스냅샷 생성 (부팅 속도 혁명의 핵심)
+    // 🌟 [수정] 샤딩된 구조에 맞춰 스냅샷 생성
     pub fn create_snapshot(&self, db: &DbState) {
-        let locked_db = db.lock().unwrap();
+        let mut dump = FullStateDump { shards_data: Vec::new() };
+
+        // 모든 샤드를 순회하며 데이터를 복사 (안전한 저장을 위해 순차적으로 락)
+        for shard_mutex in &db.shards {
+            let locked = shard_mutex.lock().unwrap();
+            // 스냅샷용 데이터 복사 (메모리 사용량이 일시적으로 늘어나지만 안전함)
+            dump.shards_data.push(Shard {
+                kv: locked.kv.clone(),
+                hnsw: locked.hnsw.clone(),
+            });
+        }
+
         let temp_path = "snapshot.bin.temp";
-
-        // 🌟 [해결] 결과를 Vec<u8>로 명시적으로 받습니다.
-        let result: Result<Vec<u8>, _> = bincode::serialize(&*locked_db);
-
-        match result {
-            Ok(encoded) => {
-                let mut file = File::create(temp_path).expect("스냅샷 생성 실패");
-                file.write_all(&encoded).unwrap();
-                file.sync_all().unwrap();
-                std::fs::rename(temp_path, "snapshot.bin").expect("스냅샷 교체 실패");
-                println!("🚀 [Snapshot] 광속 스냅샷 저장 완료.");
-            }
-            Err(e) => eprintln!("❌ 직렬화 에러: {}", e),
+        if let Ok(encoded) = bincode::serialize(&dump) {
+            let mut file = File::create(temp_path).expect("스냅샷 생성 실패");
+            file.write_all(&encoded).unwrap();
+            file.sync_all().unwrap();
+            std::fs::rename(temp_path, "snapshot.bin").expect("스냅샷 교체 실패");
+            println!("🚀 [Snapshot] 16개 샤드 상태 병렬 압축 저장 완료.");
         }
     }
 
-    // 🌟 [추가] 광속 바이너리 복구
+    // 🌟 [수정] 샤딩된 구조에 맞춰 광속 복구
     pub fn fast_restore(&self, db: &DbState) -> bool {
         if let Ok(mut file) = File::open("snapshot.bin") {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                // 파싱 과정 없이 메모리 구조 그대로 복원 (CPU 부하 0)
-                if let Ok(decoded) = bincode::deserialize::<HashMap<String, (String, Option<SystemTime>, Vec<f32>)>>(&buffer) {
-                    let mut locked_db = db.lock().unwrap();
-                    *locked_db = decoded;
-                    println!("⚡ [Restore] 바이너리 스냅샷에서 데이터를 복구했습니다 (0.1초 소요).");
+                if let Ok(decoded) = bincode::deserialize::<FullStateDump>(&buffer) {
+                    for (i, shard_data) in decoded.shards_data.into_iter().enumerate() {
+                        if i < NUM_SHARDS {
+                            let mut locked = db.shards[i].lock().unwrap();
+                            *locked = shard_data;
+                        }
+                    }
+                    println!("⚡ [Restore] 16개 샤드 및 HNSW 인덱스 병렬 복구 완료.");
                     return true;
                 }
             }
@@ -58,7 +111,6 @@ impl AofManager {
         false
     }
 
-    // 기존의 append_with_vec, restore, rewrite는 그대로 유지 (안전장치 역할)
     pub fn append_with_vec(&self, key: &str, value: &str, expiry: Option<SystemTime>, vector: &[f32]) {
         let mut f = self.file.lock().unwrap();
         let exp_ts = expiry.map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()).unwrap_or(0);
@@ -68,21 +120,21 @@ impl AofManager {
         let _ = f.flush();
     }
 
-    // src/aof.rs의 restore 함수 일부 수정
-    pub fn restore(&self, db: &DbState, engine: &Arc<Mutex<Option<Arc<SemanticEngine>>>>) {
+    pub fn restore(&self, db: &DbState, engine: &Arc<Mutex<Option<Arc<SemanticEngine>>>>) -> usize {
         let mut f = self.file.lock().unwrap();
         f.seek(SeekFrom::Start(0)).ok();
         let reader = std::io::BufReader::new(&*f);
 
-        // 엔진이 준비될 때까지 잠시 기다리거나, 준비된 엔진을 가져옴
-        let maybe_eng = {
-            let lock = engine.lock().unwrap();
-            lock.as_ref().cloned()
-        };
+        let maybe_eng = engine.lock().unwrap().as_ref().cloned();
+        let mut old_format_count = 0;
+        let mut total_recovered = 0;
 
+        println!("⏳ [AOF] 하이브리드 지능형 복구 시작...");
         for line in reader.lines() {
             if let Ok(l) = line {
-                if l.contains('\t') { // 신형 VEC_SET 포맷
+                if l.trim().is_empty() { continue; }
+
+                if l.contains('\t') { // ✨ 최신 VEC_SET 포맷
                     let parts: Vec<&str> = l.split('\t').collect();
                     if parts.len() >= 5 {
                         let key = parts[1].to_string();
@@ -91,32 +143,54 @@ impl AofManager {
                         let vector: Vec<f32> = parts[4].split(',').map(|v| v.parse().unwrap_or(0.0)).collect();
                         let expiry = if exp_ts > 0 { Some(UNIX_EPOCH + Duration::from_secs(exp_ts)) } else { None };
 
-                        // 스냅샷보다 AOF가 최신이므로 덮어씁니다.
-                        db.lock().unwrap().insert(key, (value, expiry, vector));
+                        let shard = db.get_shard(&key);
+                        let mut locked = shard.lock().unwrap();
+                        locked.kv.insert(key.clone(), (value, expiry, vector));
+                        total_recovered += 1;
                     }
-                } else if let Some(eng) = &maybe_eng { // 구형 SET 포맷 (엔진이 있을 때만)
+                } else if let Some(eng) = &maybe_eng { // ✨ 구형 SET 포맷
                     let parts: Vec<&str> = l.split_whitespace().collect();
                     if parts.len() >= 3 && parts[0].to_uppercase() == "SET" {
                         let key = parts[1].to_string();
                         let value = parts[2].to_string();
                         let vector = eng.embed(&value).unwrap_or_else(|_| vec![0.0; 384]);
-                        db.lock().unwrap().insert(key, (value, None, vector));
+
+                        let shard = db.get_shard(&key);
+                        let mut locked = shard.lock().unwrap();
+                        locked.kv.insert(key.clone(), (value, None, vector));
+
+                        old_format_count += 1; // 🌟 구형 포맷 카운트 증가
+                        total_recovered += 1;
                     }
                 }
             }
         }
+        println!("✅ [AOF] 총 {}개 복구 완료 (구형: {}개)", total_recovered, old_format_count);
+        old_format_count // 🌟 구형 데이터 개수 반환
     }
 
     pub fn rewrite(&self, db: &DbState) {
-        let locked_db = db.lock().unwrap();
         let temp_path = "appendonly.aof.temp";
-        let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(temp_path).unwrap();
-        for (key, (value, expiry, vector)) in locked_db.iter() {
-            let exp_ts = expiry.map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()).unwrap_or(0);
-            let vec_str = vector.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-            let line = format!("VEC_SET\t{}\t{}\t{}\t{}\n", key, value, exp_ts, vec_str);
-            file.write_all(line.as_bytes()).unwrap();
+        let file = OpenOptions::new().create(true).write(true).truncate(true).open(temp_path).expect("파일 생성 실패");
+        let mut writer = BufWriter::new(file); // 🌟 쓰기 버퍼링 추가
+
+        println!("🧹 [AOF] 로그 컴팩션 및 마이그레이션 수행 중...");
+
+        for shard_mutex in &db.shards {
+            let locked = shard_mutex.lock().unwrap();
+            for (key, (value, expiry, vector)) in locked.kv.iter() {
+                let exp_ts = expiry.map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()).unwrap_or(0);
+                let vec_str = vector.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                let line = format!("VEC_SET\t{}\t{}\t{}\t{}\n", key, value, exp_ts, vec_str);
+                writer.write_all(line.as_bytes()).unwrap();
+            }
         }
-        std::fs::rename(temp_path, "appendonly.aof").unwrap();
+        writer.flush().unwrap();
+        std::fs::rename(temp_path, "appendonly.aof").expect("교체 실패");
+
+        // 파일 핸들 동기화
+        let mut f = self.file.lock().unwrap();
+        *f = OpenOptions::new().create(true).append(true).read(true).open("appendonly.aof").unwrap();
+        println!("✨ [AOF] 정화 완료. 이제 모든 데이터는 최신 벡터 포맷입니다.");
     }
 }

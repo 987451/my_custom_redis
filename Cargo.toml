@@ -8,6 +8,7 @@ edition = "2024"
 rand = "=0.8.5"
 rand_distr = "=0.4.3"
 half = "=2.4.1"
+reqwest = { version = "0.11", features = ["json"] }
 
 # 2. Candle 관련 의존성
 candle-core = "0.4.1"

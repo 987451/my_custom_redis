@@ -1,122 +1,109 @@
 use std::collections::HashMap;
+// 🌟 [수정] use std::env::args; 삭제 (에러의 주범)
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}; // AsyncReadExt 추가
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use std::time::{SystemTime, Duration};
 use once_cell::sync::OnceCell;
 
-// 모듈 선언
 mod aof;
 mod web;
 mod semantic;
+mod hnsw;
 
-use aof::{AofManager, DbState}; // DbState 가져오기
-use semantic::{SemanticEngine, cosine_similarity};
+use aof::{AofManager, DbState, FullState};
+use semantic::{SemanticEngine};
 
 static ENGINE: OnceCell<Arc<SemanticEngine>> = OnceCell::new();
-
-// 1. 엔진 타입을 Option으로 정의하여 준비 상태를 관리합니다.
 type SharedEngine = Arc<Mutex<Option<Arc<SemanticEngine>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db: DbState = Arc::new(Mutex::new(HashMap::new()));
+    // 1. 샤딩된 DB 및 엔진 초기화
+    let db: DbState = Arc::new(FullState::new());
     let aof = Arc::new(AofManager::new("appendonly.aof"));
-
-    // 🌟 [수정] 엔진을 처음에 None으로 생성 (즉시 반환)
     let engine: SharedEngine = Arc::new(Mutex::new(None));
 
-    // main.rs의 복구 로직 부분
     println!("⏳ 데이터 지능형 복구 시도...");
-
-    // 1단계: 바이너리 스냅샷 로드 (매우 빠름)
     let snapshot_loaded = aof.fast_restore(&db);
 
-    // 2단계: AOF 로그를 통한 증분 복구 (스냅샷 이후의 데이터를 채워줌)
-    // 이미 스냅샷에 있는 데이터는 덮어쓰기 방식으로 최신화됨
-    println!("⏳ 최신 변경사항(AOF) 반영 중...");
-    aof.restore(&db, &engine);
-
-    if !snapshot_loaded {
-        println!("💡 첫 실행이므로 초기 스냅샷을 생성합니다.");
-        aof.create_snapshot(&db);
-    }
-
-    println!("✅ 복구 완료. 모든 데이터가 최신 상태입니다.");
-
-    // 3. 🌟 [천재적 수정] AI 엔진을 백그라운드에서 별도로 로드
+    // AI 엔진 로딩 및 증분 복구
     let engine_for_loading = Arc::clone(&engine);
     let db_for_restore = Arc::clone(&db);
     let aof_for_restore = Arc::clone(&aof);
 
     tokio::spawn(async move {
-        println!("🧠 AI 엔진 배경 예열 시작 (노트북 자원 최적화)...");
-
+        println!("🧠 AI 엔진 배경 예열 시작...");
         if let Ok(real_engine) = SemanticEngine::new() {
             let eng_arc = Arc::new(real_engine);
-
-            // 🌟 [순서 중요] 1. 먼저 전역 상태에 엔진을 등록합니다.
             {
                 let mut opt = engine_for_loading.lock().unwrap();
                 *opt = Some(Arc::clone(&eng_arc));
             }
             println!("✅ AI 지능 활성화 완료.");
 
-            // 🌟 [순서 중요] 2. 이제 포장지(engine_for_loading)를 통째로 넘깁니다.
-            // 내부에서 Option이 Some인 것을 확인하고 복구를 진행할 것입니다.
-            {
-                let locked_db = db_for_restore.lock().unwrap();
-                if locked_db.is_empty() {
-                    println!("⏳ 텍스트 로그(AOF) 복구 중...");
-                    // &eng_arc가 아니라 &engine_for_loading을 넘깁니다!
-                    aof_for_restore.restore(&db_for_restore, &engine_for_loading);
-                }
+            // 🌟 [핵심 추가] 복구를 수행하고 '구형 데이터 개수'를 받습니다.
+            let old_count = aof_for_restore.restore(&db_for_restore, &engine_for_loading);
+
+            // 🌟 [자율 정화 로직] 구형 데이터가 하나라도 발견되면 즉시 현대화(Modernization)
+            if old_count > 0 {
+                println!("💡 {}개의 구형 데이터를 발견했습니다. 최신 벡터 포맷으로 마이그레이션을 시작합니다...", old_count);
+
+                // 1. AOF 파일을 VEC_SET 포맷으로 다시 씀 (텍스트 로그 최적화)
+                aof_for_restore.rewrite(&db_for_restore);
+
+                // 2. 바이너리 스냅샷도 최신 상태로 갱신 (부팅 속도 최적화)
+                aof_for_restore.create_snapshot(&db_for_restore);
+
+                println!("✨ 자동 정화 및 마이그레이션 완료. 이제 다음 부팅은 광속입니다.");
             }
+
             println!("✨ 지능형 복구 프로세스 종료.");
         }
     });
 
-    // 4. 웹 서버 실행 (엔진 상태 공유)
+    // 웹 서버 실행
     let db_for_web = Arc::clone(&db);
-    let engine_for_web = Arc::clone(&engine); // Option 타입 엔진 전달
+    let engine_for_web = Arc::clone(&engine);
     let aof_for_web = Arc::clone(&aof);
     tokio::spawn(async move {
-        // web::start_web_server 내부에서 engine 타입을 대응하도록 수정 필요
         web::start_web_server(db_for_web, engine_for_web, aof_for_web).await;
     });
 
-    // 4. 🌟 [해결] TTL 관리 로직 (클론 먼저 생성!)
+    // TTL 관리
     let db_for_ttl = Arc::clone(&db);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-            let mut keys_to_delete = Vec::new();
-            {
-                let locked_db = db_for_ttl.lock().unwrap();
-                let now = SystemTime::now();
-                for (key, (_, expiry, _)) in locked_db.iter() {
-                    if let Some(expire_time) = expiry {
-                        if *expire_time <= now { keys_to_delete.push(key.clone()); }
+            let now = SystemTime::now();
+            for shard_mutex in &db_for_ttl.shards {
+                let mut keys_to_delete = Vec::new();
+                {
+                    let locked_shard = shard_mutex.lock().unwrap();
+                    for (key, (_, expiry, _)) in locked_shard.kv.iter() {
+                        if let Some(expire_time) = expiry {
+                            if *expire_time <= now { keys_to_delete.push(key.clone()); }
+                        }
                     }
                 }
-            }
-            if !keys_to_delete.is_empty() {
-                let mut locked_db = db_for_ttl.lock().unwrap();
-                for key in keys_to_delete { locked_db.remove(&key); }
+                if !keys_to_delete.is_empty() {
+                    let mut locked_shard = shard_mutex.lock().unwrap();
+                    for key in keys_to_delete { locked_shard.kv.remove(&key); }
+                }
             }
         }
     });
 
     let addr = "127.0.0.1:6380";
     let listener = TcpListener::bind(addr).await?;
-    println!("🚀 [REDIS + AI] 서버 가동! 포트: {}", addr);
+    println!("🚀 [SHARDED REDIS] 서버 가동! 포트: {}", addr);
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
         let db_clone = Arc::clone(&db);
         let aof_clone = Arc::clone(&aof);
-        let engine_clone = Arc::clone(&engine); // Option 타입
+        let engine_clone = Arc::clone(&engine);
 
         tokio::spawn(async move {
             let (reader, mut writer) = socket.split();
@@ -125,7 +112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 line.clear();
-                // 1. 배열 개수 읽기 (*3\r\n)
                 if let Err(_) = buf_reader.read_line(&mut line).await { break; }
                 if line.is_empty() { break; }
 
@@ -133,22 +119,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !header.starts_with('*') { continue; }
                 let num_elements: usize = header[1..].parse().unwrap_or(0);
 
+                // 🌟 [해결] args 변수 정상 선언
                 let mut args = Vec::new();
                 for _ in 0..num_elements {
-                    // A. 데이터 길이 읽기 ($15\r\n)
                     line.clear();
                     if let Err(_) = buf_reader.read_line(&mut line).await { break; }
                     if !line.starts_with('$') { continue; }
                     let byte_len: usize = line.trim()[1..].parse().unwrap_or(0);
 
-                    // B. [핵심] 한글 처리를 위해 바이트 단위로 정확히 읽기
                     let mut buffer = vec![0u8; byte_len];
                     if let Err(_) = buf_reader.read_exact(&mut buffer).await { break; }
-
-                    // C. 뒤에 붙는 \r\n 버리기
                     let mut crlf = [0u8; 2];
                     let _ = buf_reader.read_exact(&mut crlf).await;
-
                     args.push(String::from_utf8_lossy(&buffer).into_owned());
                 }
 
@@ -157,15 +139,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match command.as_str() {
                     "REWRITE" => {
-                        // 🌟 [수정] 원본 db가 아니라 루프에서 넘겨받은 db_clone을 사용합니다.
-                        // 다시 클론할 필요 없이 바로 넘겨주면 됩니다.
                         aof_clone.rewrite(&db_clone);
                         let _ = writer.write_all(b"+OK AOF Compacted\r\n").await;
                     }
                     "SHUTDOWN" => {
-                        println!("🛑 서버 종료 중... 스냅샷을 생성합니다.");
-                        aof_clone.create_snapshot(&db_clone); // 광속 부팅용 바이너리 저장
-                        aof_clone.rewrite(&db_clone);        // 텍스트 로그 최적화
+                        // 🌟 [수정] 종료 시 스냅샷 저장 및 최적화
+                        println!("🛑 서버 종료: 스냅샷 생성 중...");
+                        aof_clone.create_snapshot(&db_clone);
+                        aof_clone.rewrite(&db_clone);
                         let _ = writer.write_all(b"+OK Bye\r\n").await;
                         std::process::exit(0);
                     }
@@ -173,14 +154,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if args.len() >= 3 {
                             let key = args[1].clone();
                             let value = args[2].clone();
+
+                            // 임베딩 (락 밖에서)
                             let embedding = {
                                 let opt = engine_clone.lock().unwrap();
-                                if let Some(eng) = opt.as_ref() {
-                                    eng.embed(&value).unwrap_or_else(|_| vec![0.0; 384])
-                                } else {
-                                    vec![0.0; 384]
-                                }
+                                opt.as_ref().map(|eng| eng.embed(&value).unwrap_or_else(|_| vec![0.0; 384]))
+                                    .unwrap_or_else(|| vec![0.0; 384])
                             };
+
                             let mut expiry = None;
                             if args.len() >= 5 && args[3].to_uppercase() == "EX" {
                                 if let Ok(secs) = args[4].parse::<u64>() {
@@ -188,90 +169,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
+                            // 🌟 [수정] 자물쇠 범위 한정 (await 충돌 방지)
                             {
-                                // 🌟 이미 루프 밖에서 클론된 db_clone을 사용 중이므로 안전합니다.
-                                let mut locked_db = db_clone.lock().unwrap();
-                                locked_db.insert(key.clone(), (value.clone(), expiry, embedding.clone()));
+                                let shard = db_clone.get_shard(&key);
+                                let mut locked_shard = shard.lock().unwrap();
+                                locked_shard.kv.insert(key.clone(), (value.clone(), expiry, embedding.clone()));
+                                locked_shard.hnsw.insert(key.clone(), embedding.clone());
                             }
 
                             aof_clone.append_with_vec(&key, &value, expiry, &embedding);
-                            let _ = writer.write_all(b"+OK (AI-Ready & Saved)\r\n").await;
+                            let _ = writer.write_all(b"+OK\r\n").await;
                         }
                     }
                     "SGET" => {
                         if args.len() >= 2 {
                             let query = &args[1];
-                            // 1. 임계값(Threshold) 파싱
-                            let threshold: f32 = args.get(2)
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(0.8);
-
-                            // 2. 🌟 [지능형 엔진 추출] Option 금고 열기
-                            let maybe_engine = {
-                                let lock = engine_clone.lock().unwrap();
-                                // 내부의 Arc<SemanticEngine>을 클론하여 락 시간을 최소화함
-                                lock.as_ref().cloned()
-                            };
+                            let threshold: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                            let maybe_engine = engine_clone.lock().unwrap().as_ref().cloned();
 
                             if let Some(eng) = maybe_engine {
-                                // 3. 질문 임베딩 (락 밖에서 수행하여 성능 최적화)
-                                let query_vec = match eng.embed(query) {
-                                    Ok(vec) => vec,
-                                    Err(e) => {
-                                        eprintln!("❌ [SGET] 임베딩 실패: {}", e);
-                                        let _ = writer.write_all(b"-ERR Embedding failed\r\n").await;
-                                        continue;
-                                    }
-                                };
+                                let query_vec = eng.embed(query).unwrap_or_default();
+                                let mut global_best: Option<(f32, String)> = None;
 
-                                // 4. 시맨틱 검색 수행
-                                let mut best_match = None;
-                                let mut max_score = -1.0;
-                                {
-                                    let locked_db = db_clone.lock().unwrap();
-                                    for (val, _, emb) in locked_db.values() {
-                                        // 데이터가 아직 인덱싱되지 않은 경우(기본 벡터) 건너뜀
-                                        if emb.iter().all(|&x| x == 0.0) { continue; }
-
-                                        let score = cosine_similarity(&query_vec, emb);
-                                        if score > threshold && score > max_score {
-                                            max_score = score;
-                                            best_match = Some(val.clone());
+                                for shard_mutex in &db_clone.shards {
+                                    let shard_res = {
+                                        let locked_shard = shard_mutex.lock().unwrap();
+                                        locked_shard.hnsw.search(&query_vec, 10)
+                                    };
+                                    if let Some((score, key)) = shard_res.first() {
+                                        if global_best.is_none() || *score > global_best.as_ref().unwrap().0 {
+                                            global_best = Some((*score, key.clone()));
                                         }
                                     }
                                 }
 
-                                // 5. 결과 반환
-                                let response = match best_match {
-                                    Some(val) => format!("${}\r\n{}\r\n", val.as_bytes().len(), val),
-                                    None => "$-1\r\n".to_string(), // 유사한 데이터 없음
-                                };
-                                let _ = writer.write_all(response.as_bytes()).await;
-
+                                if let Some((score, key)) = global_best {
+                                    if score > threshold {
+                                        let val = {
+                                            let shard = db_clone.get_shard(&key);
+                                            let locked_shard = shard.lock().unwrap();
+                                            locked_shard.kv.get(&key).map(|(v, _, _)| v.clone())
+                                        };
+                                        if let Some(v) = val {
+                                            let resp = format!("${}\r\n{}\r\n", v.as_bytes().len(), v);
+                                            let _ = writer.write_all(resp.as_bytes()).await;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                let _ = writer.write_all(b"$-1\r\n").await;
                             } else {
-                                // 6. 🌟 [피드백] 엔진이 로딩 중일 때의 응답
-                                let _ = writer.write_all(b"-ERR AI engine is still booting. Please try again in a few seconds.\r\n").await;
+                                let _ = writer.write_all(b"-ERR engine loading\r\n").await;
                             }
                         }
                     }
                     "GET" => {
                         if args.len() >= 2 {
                             let key = &args[1];
-                            let response = {
-                                let locked_db = db_clone.lock().unwrap();
-                                match locked_db.get(key) {
-                                    Some((value, expiry, _)) => {
-                                        if let Some(exp) = expiry {
-                                            if *exp <= SystemTime::now() { "$-1\r\n".to_string() }
-                                            else { format!("${}\r\n{}\r\n", value.as_bytes().len(), value) }
-                                        } else {
-                                            format!("${}\r\n{}\r\n", value.as_bytes().len(), value)
-                                        }
-                                    }
-                                    None => "$-1\r\n".to_string(),
-                                }
+                            let result = {
+                                let shard = db_clone.get_shard(key);
+                                let locked_shard = shard.lock().unwrap();
+                                locked_shard.kv.get(key).map(|(v, _, _)| v.clone())
                             };
-                            let _ = writer.write_all(response.as_bytes()).await;
+                            let resp = match result {
+                                Some(val) => format!("${}\r\n{}\r\n", val.as_bytes().len(), val),
+                                None => "$-1\r\n".to_string(),
+                            };
+                            let _ = writer.write_all(resp.as_bytes()).await;
                         }
                     }
                     "PING" => { let _ = writer.write_all(b"+PONG\r\n").await; }
