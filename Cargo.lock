@@ -1309,6 +1309,7 @@ name = "my_custom_redis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bincode",
  "candle-core",

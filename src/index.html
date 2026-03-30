@@ -1,0 +1,220 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Multi-Type Redis Studio</title>
+    <style>
+        /* 기존 스타일 유지 */
+        body { font-family: 'Pretendard', -apple-system, sans-serif; padding: 40px; background: #f8f9fa; color: #333; }
+        .container { max-width: 1200px; margin: auto; }
+        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 8px 30px rgba(0,0,0,0.05); margin-bottom: 25px; }
+        h1 { font-size: 24px; color: #1a73e8; margin: 0 0 20px 0; display: flex; align-items: center; gap: 10px; }
+        .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; text-transform: uppercase; color: white; }
+        .type-string { background: #1a73e8; }
+        .type-list { background: #34a853; }
+        .type-set { background: #f9ab00; }
+        .type-hash { background: #9c27b0; }
+
+        /* 🌟 [추가] 관리 버튼 스타일 */
+        .btn-edit { background: #ff9800; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-right: 5px; transition: 0.2s; }
+        .btn-delete { background: #f44336; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .btn-edit:hover { background: #e68a00; transform: scale(1.05); }
+        .btn-delete:hover { background: #d32f2f; transform: scale(1.05); }
+
+        .search-input { width: 100%; padding: 15px; border: 2px solid #ddd; border-radius: 12px; font-size: 16px; outline: none; transition: 0.2s; }
+        .search-input:focus { border-color: #1a73e8; }
+        .input-group { display: flex; gap: 10px; margin-top: 20px; }
+        select, input { padding: 10px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
+        .btn { padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th { background: #f1f3f4; padding: 12px; text-align: left; font-size: 12px; color: #5f6368; }
+        td { padding: 15px; border-bottom: 1px solid #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .val-text { font-family: monospace; font-size: 13px; color: #555; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card" style="border-left: 5px solid #1a73e8;">
+        <h1>🔍 Key Filter & Type Monitor</h1>
+        <input type="text" id="filter-q" class="search-input" placeholder="키워드로 데이터 필터링..." oninput="updateData()">
+    </div>
+
+    <div class="card">
+        <h1>🚀 Structured Data Manager</h1>
+        <div class="input-group">
+            <select id="data-type" onchange="updatePlaceholder()">
+                <option value="string">String</option>
+                <option value="list">List (Array)</option>
+                <option value="hash">Hash (Object)</option>
+                <option value="set">Set (Unique Array)</option>
+            </select>
+            <input type="text" id="key" placeholder="Key Name" style="flex: 1;">
+        </div>
+        <div style="margin-top: 15px;">
+        <textarea id="val-json" style="width: 100%; height: 100px; padding: 10px; border-radius: 8px; font-family: monospace;"
+                  placeholder='여기에 값을 입력하세요...'></textarea>
+            <div id="json-hint" style="font-size: 11px; color: #888; margin-top: 5px;"></div>
+        </div>
+        <button class="btn" onclick="addData()" style="margin-top: 15px; width: 100%;">저장하기 (Save to Shard)</button>
+    </div>
+
+    <div class="card">
+        <div id="data-table">데이터 로드 중...</div>
+    </div>
+    <div id="drop-zone" class="card" style="border: 3px dashed #1a73e8; background: #e8f0fe; text-align: center; cursor: pointer;">
+        <h1 style="color: #1a73e8;">📁 Knowledge Dropzone</h1>
+        <p>JSON, CSV, 또는 TXT 파일을 여기로 드래그하세요.</p>
+        <div id="upload-status" style="font-weight: bold; color: #1557b0;"></div>
+    </div>
+</div>
+
+
+<script>
+    const dropZone = document.getElementById('drop-zone');
+
+    // 드래그 이벤트 방지
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(name => {
+        dropZone.addEventListener(name, e => { e.preventDefault(); e.stopPropagation(); });
+    });
+
+    dropZone.addEventListener('drop', async (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length === 0) return;
+
+        const file = files[0];
+        const reader = new FileReader();
+
+        reader.onload = async (event) => {
+            const content = event.target.result;
+            let dataToUpload = [];
+
+            try {
+                if (file.name.endsWith('.json')) {
+                    // JSON 파일 처리
+                    dataToUpload = JSON.parse(content);
+                } else {
+                    // TXT 파일 처리 (문장 단위로 쪼개기)
+                    dataToUpload = content.split(/[.\n]/).filter(t => t.trim().length > 5).map((text, i) => ({
+                        key: `${file.name}_${i}`,
+                        value: text.trim(),
+                        data_type: "string"
+                    }));
+                }
+
+                document.getElementById('upload-status').innerText = `⏳ ${dataToUpload.length}개 지식 인덱싱 중...`;
+
+                // 🌟 벌크 업로드 API 호출
+                const res = await fetch('/api/bulk', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(dataToUpload)
+                });
+
+                if(res.ok) {
+                    document.getElementById('upload-status').innerText = `✅ 완료! ${dataToUpload.length}개의 지식이 샤드에 안착했습니다.`;
+                    updateData();
+                }
+            } catch (err) {
+                alert("파일 처리 중 에러: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    });
+</script>
+
+<script>
+    function updatePlaceholder() {
+        const type = document.getElementById('data-type').value;
+        const textarea = document.getElementById('val-json');
+        const examples = {
+            string: "일반 텍스트...",
+            list: '["A", "B", "C"]',
+            hash: '{"field": "value"}',
+            set: '["X", "Y"]'
+        };
+        textarea.placeholder = examples[type];
+    }
+
+    async function updateData() {
+        const q = document.getElementById('filter-q').value;
+        const res = await fetch(`/api/data?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+
+        let html = '<table><thead><tr>' +
+            '<th style="width: 10%">Type</th>' +
+            '<th style="width: 15%">Key</th>' +
+            '<th style="width: 40%">Value Content</th>' +
+            '<th style="width: 15%">Expire</th>' +
+            '<th style="width: 20%">Actions</th>' + // 🌟 Actions 열 추가
+            '</tr></thead><tbody>';
+
+        for (const [key, item] of Object.entries(data).sort()) {
+            const typeClass = `type-${item.data_type.toLowerCase()}`;
+            const expireText = item.expiry ? new Date(item.expiry * 1000).toLocaleTimeString() : 'Persist';
+
+            // JSON 문자열 처리 (홑따옴표 탈출)
+            const safeValue = item.value.replace(/'/g, "\\'");
+
+            html += `<tr>
+                    <td><span class="badge ${typeClass}">${item.data_type}</span></td>
+                    <td><strong>${key}</strong></td>
+                    <td class="val-text">${item.value}</td>
+                    <td>${expireText}</td>
+                    <td>
+                        <button class="btn-edit" onclick="editKey('${key}', '${safeValue}', '${item.data_type}')">편집</button>
+                        <button class="btn-delete" onclick="deleteKey('${key}')">삭제</button>
+                    </td>
+                </tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('data-table').innerHTML = html;
+    }
+
+    // 🌟 [추가] 삭제 로직
+    async function deleteKey(key) {
+        if(!confirm(`'${key}' 데이터를 영구 삭제할까요?`)) return;
+        const res = await fetch(`/api/data/${encodeURIComponent(key)}`, { method: 'DELETE' });
+        if(res.ok) updateData();
+    }
+
+    // 🌟 [추가] 편집 로직 (입력창으로 로드)
+    function editKey(key, value, type) {
+        document.getElementById('key').value = key;
+        document.getElementById('data-type').value = type.toLowerCase();
+
+        // 디버그 출력물(format!) 형식을 다시 JSON 규격으로 보정 시도
+        let cleanVal = value;
+        if(type !== 'String') {
+            cleanVal = value.replace(/\{/g, '{"').replace(/: /g, '": "').replace(/, /g, '", "').replace(/\}/g, '"}')
+                .replace(/\[/g, '["').replace(/\]/g, '"]').replace(/", "/g, '", "');
+        }
+        document.getElementById('val-json').value = cleanVal;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    async function addData() {
+        const key = document.getElementById('key').value;
+        const rawValue = document.getElementById('val-json').value;
+        const type = document.getElementById('data-type').value;
+        if(!key || !rawValue) return;
+
+        let finalValue;
+        try {
+            finalValue = (type === 'string') ? rawValue : JSON.parse(rawValue);
+        } catch(e) { return alert("JSON 형식이 올바르지 않습니다."); }
+
+        await fetch('/api/data', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key, value: finalValue, data_type: type, ex: null })
+        });
+        document.getElementById('val-json').value = '';
+        document.getElementById('key').value = '';
+        updateData();
+    }
+
+    setInterval(updateData, 3000);
+    updateData();
+</script>
+</body>
+</html>
