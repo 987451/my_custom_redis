@@ -1,0 +1,50 @@
+﻿/* 🌟 분석가 지향적 테마 스타일 */
+:root {
+    --primary: #1a73e8;
+    --success: #34a853;
+    --warning: #f9ab00;
+    --danger: #f44336;
+    --bg: #f8f9fa;
+    --card: #ffffff;
+}
+
+body { font-family: 'Pretendard', sans-serif; padding: 20px; background: var(--bg); color: #333; line-height: 1.6; }
+.container { max-width: 1200px; margin: auto; }
+.card { background: var(--card); padding: 25px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); margin-bottom: 20px; transition: 0.3s; }
+.card:hover { transform: translateY(-2px); }
+
+h1 { font-size: 20px; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; color: var(--primary); }
+
+/* 버튼 그룹 및 관제탑 전용 */
+.btn-group { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; }
+.console-output { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 8px; font-family: 'Fira Code', monospace; font-size: 13px; height: 100px; overflow-y: auto; white-space: pre-wrap; }
+
+.btn { padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; font-size: 14px; }
+.btn:active { transform: scale(0.95); }
+.btn-primary { background: var(--primary); color: white; }
+.btn-success { background: var(--success); color: white; }
+.btn-warning { background: var(--warning); color: white; }
+.btn-danger { background: var(--danger); color: white; }
+.btn-export { background: #9c27b0; color: white; }
+
+.search-input { width: 100%; padding: 12px; border: 2px solid #eee; border-radius: 10px; font-size: 15px; outline: none; box-sizing: border-box; }
+.search-input:focus { border-color: var(--primary); }
+
+textarea { width: 100%; height: 100px; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-family: monospace; box-sizing: border-box; resize: vertical; }
+
+.badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; color: white; }
+.type-string { background: var(--primary); }
+.type-list { background: var(--success); }
+.type-hash { background: #9c27b0; }
+
+.drop-zone { border: 2px dashed var(--primary); background: #f0f4ff; text-align: center; }
+
+table { width: 100%; border-collapse: collapse; }
+th { background: #f8f9fa; padding: 10px; text-align: left; font-size: 13px; color: #666; }
+td { padding: 12px; border-bottom: 1px solid #eee; font-size: 14px; }
+
+/* 유틸리티 */
+.flex-1 { flex: 1; }
+.input-group { display: flex; gap: 10px; }
+.mt-15 { margin-top: 15px; }
+.w-full { width: 100%; }

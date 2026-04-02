@@ -1,8 +1,7 @@
-﻿// src/commands/shutdown.rs
-use crate::commands::{Command, CommandWriter, SharedEngine};
+﻿use crate::commands::{Command, CommandWriter, SharedEngine};
 use crate::aof::{DbState, AofManager};
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt; // 🌟 .write_all() 사용을 위해 필수
+use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
 
 pub struct ShutdownCommand;
@@ -15,23 +14,25 @@ impl Command for ShutdownCommand {
         db: &DbState,
         aof: &Arc<AofManager>,
         _engine: &SharedEngine,
-        writer: CommandWriter<'_>, // 🌟 [수정] 규격화된 별칭 사용
+        writer: CommandWriter<'_>,
     ) -> anyhow::Result<()> {
-        println!("🛑 [SYSTEM] 안전 종료 시퀀스를 시작합니다...");
+        println!("🛑 [SYSTEM] 안전 종료 시퀀스 가동 (Final Checkpoint)...");
 
-        // 1. 바이너리 스냅샷 생성 (가장 빠른 복구를 위해)
-        aof.create_snapshot(db);
-
-        // 2. AOF 로그 컴팩션 (파일 정화)
+        // 1. 🌟 [순서 중요] 먼저 로그를 깨끗하게 정렬 (Rewrite)
+        // 이 과정에서 삭제된 데이터가 제거되고 버퍼 인덱스 순서로 로그가 재작성됩니다.
         aof.rewrite(db);
 
-        // 3. 클라이언트에게 작별 인사 전송
-        let _ = writer.write_all(b"+OK Bye (All data secured)\r\n").await;
+        // 2. 🌟 정렬된 데이터를 즉시 이진 스냅샷으로 저장 (Create Snapshot)
+        // 다음 부팅 시 텍스트 파싱 없이 광속으로 메모리에 올리기 위함입니다.
+        aof.create_snapshot(db);
+
+        // 3. 🌟 클라이언트에게 성공 보고 및 스트림 플러시
+        let _ = writer.write_all(b"+OK Bye. All data aligned and secured.\r\n").await;
         let _ = writer.flush().await;
 
-        println!("✨ [SYSTEM] 모든 데이터가 안전하게 저장되었습니다. 프로세스를 종료합니다.");
+        println!("✨ [SYSTEM] 정렬 완료. 스냅샷 저장 완료. 이제 안전하게 종료합니다.");
 
-        // 4. 즉시 종료 (주의: 실제 상용 서비스에서는 메인 루프에 신호를 주는 방식을 권장함)
+        // 4. 프로세스 종료
         std::process::exit(0);
     }
 }

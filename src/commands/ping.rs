@@ -8,7 +8,15 @@ pub struct PingCommand;
 
 #[async_trait]
 impl Command for PingCommand {
-    async fn execute(&self, _args: Vec<String>, _db: &DbState, _aof: &Arc<AofManager>, _engine: &SharedEngine, writer: CommandWriter<'_>) -> anyhow::Result<()> {
+    async fn execute(
+        &self,
+        _args: Vec<String>,
+        _db: &DbState,
+        _aof: &Arc<AofManager>,
+        _engine: &SharedEngine,
+        writer: CommandWriter<'_>
+    ) -> anyhow::Result<()> {
+        // Redis 표준 응답 전송
         writer.write_all(b"+PONG\r\n").await?;
         Ok(())
     }

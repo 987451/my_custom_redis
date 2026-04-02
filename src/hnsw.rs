@@ -1,27 +1,24 @@
-﻿// src/hnsw.rs
-use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, HashSet};
+﻿use serde::{Serialize, Deserialize};
 use crate::semantic::cosine_similarity;
 
-#[derive(Serialize, Deserialize, Clone)] // 🌟 Clone 추가!
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HnswConfig {
-    pub m: usize,
+    pub m: usize,            // 각 노드의 최대 이웃 수
     pub ef_construction: usize,
     pub max_layers: usize,
 }
 
-#[derive(Serialize, Deserialize, Clone)] // 🌟 Clone 추가!
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HnswNode {
-    pub key: String,
-    pub vector: Vec<f32>,
+    // 🌟 [혁신] 실제 벡터나 키를 저장하지 않음! 오직 이웃의 '인덱스'만 보관.
+    // 레이어별 이웃 리스트 (0번 레이어가 가장 조밀한 바닥 레이어)
     pub neighbors: Vec<Vec<usize>>,
 }
 
-#[derive(Serialize, Deserialize, Clone)] // 🌟 Clone 추가!
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HnswIndex {
     pub nodes: Vec<HnswNode>,
     pub entry_point: Option<usize>,
-    pub key_to_idx: HashMap<String, usize>,
     pub config: HnswConfig,
 }
 
@@ -30,62 +27,75 @@ impl HnswIndex {
         Self {
             nodes: Vec::new(),
             entry_point: None,
-            key_to_idx: HashMap::new(),
             config: HnswConfig { m: 16, ef_construction: 128, max_layers: 5 },
         }
     }
 
-    // 데이터 삽입 (그래프 연결) - 간단한 버전
-    pub fn insert(&mut self, key: String, vector: Vec<f32>) {
-        if let Some(&idx) = self.key_to_idx.get(&key) {
-            self.nodes[idx].vector = vector; // 이미 있으면 업데이트
-            return;
+    /// 🌟 [수정] 데이터 삽입 시 인덱스만 연결
+    /// vector는 Shard 버퍼에 저장되므로 여기서는 거리 계산용으로만 잠시 사용
+    pub fn insert(&mut self, idx: usize, vector: &[f32], all_vectors: &[f32], dim: usize) {
+        // 이미 인덱스 범위 내에 노드가 있다면 neighbors 공간만 확보
+        while self.nodes.len() <= idx {
+            self.nodes.push(HnswNode {
+                neighbors: vec![Vec::new(); self.config.max_layers],
+            });
         }
 
-        let new_idx = self.nodes.len();
-        let mut neighbors = vec![Vec::new(); self.config.max_layers];
-
-        // 실제 HNSW 알고리즘에서는 여기서 레이어를 결정하고 상위 층부터 연결을 수행합니다.
-        // 현재는 첫 단계로 모든 노드를 0번 레이어에 연결하는 구조부터 시작합니다.
-        if let Some(ep) = self.entry_point {
-            neighbors[0].push(ep); // 단순 연결 (나중에 최적화 가능)
-            if self.nodes[ep].neighbors[0].len() < self.config.m {
-                self.nodes[ep].neighbors[0].push(new_idx);
+        if let Some(ep_idx) = self.entry_point {
+            // 1. 단순화된 연결 로직 (0번 레이어 위주)
+            // 실제 HNSW는 상위 레이어부터 탐색하며 내려오지만,
+            // 현재는 0번 레이어에 밀접하게 연결하는 구조를 우선 적용
+            if !self.nodes[ep_idx].neighbors[0].contains(&idx) && self.nodes[ep_idx].neighbors[0].len() < self.config.m {
+                self.nodes[ep_idx].neighbors[0].push(idx);
+                self.nodes[idx].neighbors[0].push(ep_idx);
             }
         } else {
-            self.entry_point = Some(new_idx);
+            self.entry_point = Some(idx);
         }
-
-        self.nodes.push(HnswNode { key: key.clone(), vector, neighbors });
-        self.key_to_idx.insert(key, new_idx);
     }
 
-    // 🌟 [핵심] 그래프 기반 고속 탐색
-    pub fn search(&self, query: &[f32], ef: usize) -> Vec<(f32, String)> {
+    /// 🌟 [핵심] 버퍼 참조형 고속 검색
+    /// all_vectors: Shard에서 관리하는 거대한 f32 버퍼
+    pub fn search(&self, query: &[f32], k: usize, all_vectors: &[f32], dim: usize) -> Vec<(f32, usize)> {
         let mut results = Vec::new();
         let ep = match self.entry_point {
             Some(idx) => idx,
             None => return results,
         };
 
-        // 1. 단순화된 탐색: 진입점에서 시작해 가장 가까운 이웃으로 점프
         let mut curr_idx = ep;
-        let mut curr_dist = cosine_similarity(query, &self.nodes[curr_idx].vector);
+
+        // 🌟 버퍼에서 벡터 추출하여 초기 거리 계산
+        let ep_vec = &all_vectors[curr_idx * dim .. (curr_idx + 1) * dim];
+        let mut curr_dist = cosine_similarity(query, ep_vec);
+
+        // Greedy Search (0번 레이어 탐색)
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(curr_idx);
 
         loop {
             let mut changed = false;
-            for &neighbor in &self.nodes[curr_idx].neighbors[0] {
-                let d = cosine_similarity(query, &self.nodes[neighbor].vector);
+            let neighbors = &self.nodes[curr_idx].neighbors[0];
+
+            for &nb_idx in neighbors {
+                if visited.contains(&nb_idx) { continue; }
+                visited.insert(nb_idx);
+
+                // 🌟 버퍼에서 이웃의 벡터를 직접 참조 (추가 할당 없음)
+                let nb_vec = &all_vectors[nb_idx * dim .. (nb_idx + 1) * dim];
+                let d = cosine_similarity(query, nb_vec);
+
                 if d > curr_dist {
                     curr_dist = d;
-                    curr_idx = neighbor;
+                    curr_idx = nb_idx;
                     changed = true;
                 }
             }
             if !changed { break; }
         }
 
-        results.push((curr_dist, self.nodes[curr_idx].key.clone()));
+        // 결과에 인덱스 반환 (Shard가 이 인덱스로 Key를 찾음)
+        results.push((curr_dist, curr_idx));
         results
     }
 }

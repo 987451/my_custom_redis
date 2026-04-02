@@ -2,3 +2,4 @@
 pub mod aof;
 pub mod web;
 pub mod hnsw;
+pub mod commands;
