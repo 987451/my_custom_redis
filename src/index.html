@@ -3,59 +3,106 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Buffer Engine Studio</title>
+    <title>AI Knowledge Lab (Shared-Nothing)</title>
+    <!-- 폰트와 스타일을 더 전문적인 분석 도구 느낌으로 교체 -->
     <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* 추가될 스타일: 분석 결과창 및 AI 전용 UI */
+        .ai-search-box { background: #eef2f7; border: 2px solid #1a73e8; padding: 20px; border-radius: 12px; margin-bottom: 20px; }
+        .shard-indicator { display: flex; gap: 4px; margin-top: 10px; }
+        .shard-dot { width: 12px; height: 12px; border-radius: 50%; background: #ccc; transition: 0.3s; }
+        .shard-active { background: #34a853; box-shadow: 0 0 8px #34a853; }
+    </style>
 </head>
 <body>
 <div class="container">
-    <!-- 🌟 [혁신] 명령어 관제탑 (Command Center) -->
+    <!-- 1. 엔진 상태 및 관제탑 -->
     <div class="card command-center">
-        <h1>🎮 Engine Control Center</h1>
+        <h1>🎮 Shared-Nothing Control Center</h1>
         <div class="btn-group">
-            <button class="btn btn-primary" onclick="runCommand('INFO')">📊 INFO</button>
-            <button class="btn btn-primary" onclick="runCommand('STATS')">📈 STATS</button>
-            <button class="btn btn-warning" onclick="runCommand('REWRITE')">🧹 REWRITE</button>
-            <button class="btn btn-success" onclick="runCommand('SNAPSHOT')">📸 SNAPSHOT</button>
-            <button class="btn btn-export" onclick="exportData()">📤 EXPORT (JSONL)</button>
-            <button class="btn btn-danger" onclick="runCommand('SHUTDOWN')">🛑 SHUTDOWN</button>
+            <button class="btn btn-primary" onclick="runCommand('INFO')">📊 시스템 정보</button>
+            <button class="btn btn-primary" onclick="runCommand('STATS')">📈 통계 분석</button>
+            <button class="btn btn-warning" onclick="runCommand('REWRITE')">🧹 로그 정렬</button>
+            <button class="btn btn-success" onclick="runCommand('SNAPSHOT')">📸 즉시 박제</button>
+            <button class="btn btn-export" onclick="exportData()">📤 분석용 추출</button>
+            <button class="btn btn-danger" onclick="runCommand('SHUTDOWN')">🛑 안전 종료</button>
         </div>
-        <div id="cmd-output" class="console-output">명령어 결과가 여기에 표시됩니다...</div>
+        <!-- 🌟 [혁신] 16개 샤드 실시간 모니터 (Placeholder) -->
+        <div class="shard-indicator" id="shard-status">
+            <!-- JS에서 16개의 점을 생성하여 워커의 생존 신호를 보여줌 -->
+        </div>
+        <div id="cmd-output" class="console-output">엔진 준비 완료.</div>
     </div>
 
-    <!-- 기존 필터 및 입력 카드 -->
+    <!-- 2. 🌟 [신규] AI 시맨틱 브레인 검색 (SEARCH 명령어 활용) -->
+    <div class="card ai-search-box">
+        <h1>🧠 Semantic Brain Search</h1>
+        <div class="input-group">
+            <input type="text" id="ai-query" class="search-input" placeholder="자연어로 질문하세요 (예: 스트레스 높은 엔지니어 찾아줘)">
+            <button class="btn btn-primary" onclick="runAiSearch()">🔍 지능형 검색</button>
+        </div>
+        <div id="ai-results" style="margin-top: 15px; font-size: 14px; color: #444;"></div>
+    </div>
+
+    <!-- 3. 데이터 필터링 -->
     <div class="card border-primary">
-        <h1>🔍 Key Filter & Type Monitor</h1>
-        <input type="text" id="filter-q" class="search-input" placeholder="키워드로 데이터 필터링..." oninput="updateData()">
+        <h1>🔍 Key Filter & Monitor</h1>
+        <input type="text" id="filter-q" class="search-input" placeholder="키워드로 키 이름 검색..." oninput="updateData()">
     </div>
 
+    <!-- 4. 데이터 입력기 -->
     <div class="card">
-        <h1>🚀 Structured Data Manager</h1>
+        <h1>🚀 Data Injection (to Shard)</h1>
         <div class="input-group">
             <select id="data-type" onchange="updatePlaceholder()">
                 <option value="string">String</option>
-                <option value="list">List (Array)</option>
-                <option value="hash">Hash (Object)</option>
-                <option value="set">Set (Unique Array)</option>
+                <option value="list">List</option>
+                <option value="hash" selected>Hash (추천: CSV형태)</option>
+                <option value="set">Set</option>
             </select>
             <input type="text" id="key" placeholder="Key Name" class="flex-1">
         </div>
         <div class="mt-15">
-            <textarea id="val-json" placeholder="여기에 값을 입력하세요..."></textarea>
+            <textarea id="val-json" placeholder="데이터를 입력하세요..."></textarea>
         </div>
-        <button class="btn btn-primary w-full mt-15" onclick="addData()">저장하기 (Save to Shard)</button>
+        <button class="btn btn-primary w-full mt-15" onclick="addData()">지능형 저장 (Auto-Embedding)</button>
     </div>
 
+    <!-- 5. 데이터 테이블 -->
     <div class="card">
-        <div id="data-table">데이터 로드 중...</div>
+        <div id="data-table">로딩 중...</div>
     </div>
 
+    <!-- 6. 드롭존 -->
     <div id="drop-zone" class="card drop-zone">
         <h1>📁 Knowledge Dropzone</h1>
-        <p>JSON, CSV, 또는 TXT 파일을 여기로 드래그하세요.</p>
+        <p>CSV 파일을 던지면 자동으로 16개 샤드에 분산 구조화됩니다.</p>
         <div id="upload-status"></div>
     </div>
 </div>
 
 <script src="/static/app.js"></script>
+<script>
+    // 🌟 추가될 프론트 로직 예시
+    async function runAiSearch() {
+        const q = document.getElementById('ai-query').value;
+        const out = document.getElementById('ai-results');
+        out.innerHTML = "🧠 엔진이 생각 중입니다...";
+
+        const res = await fetch(`/api/cmd?command=SEARCH&query=${encodeURIComponent(q)}`, {method: 'POST'});
+        const data = await res.text();
+        // SEARCH 결과를 파싱하여 예쁘게 출력하는 로직
+        out.innerHTML = `<div style="background:white; padding:10px; border-radius:8px;">${data}</div>`;
+    }
+
+    // 16개 샤드 점 생성
+    const shardBox = document.getElementById('shard-status');
+    for(let i=0; i<16; i++) {
+        const dot = document.createElement('div');
+        dot.className = 'shard-dot shard-active'; // 초기엔 모두 활성 상태로 표시
+        dot.title = `Shard ${i}`;
+        shardBox.appendChild(dot);
+    }
+</script>
 </body>
 </html>

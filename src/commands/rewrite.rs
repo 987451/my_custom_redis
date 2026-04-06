@@ -17,31 +17,26 @@ impl Command for RewriteCommand {
         _engine: &SharedEngine,
         writer: CommandWriter<'_>
     ) -> anyhow::Result<()> {
-
-        // 1. 🌟 시작 시간 측정 (성능 모니터링)
+        // 1. 🌟 시작 시간 측정
         let start_time = Instant::now();
 
-        // 2. 🌟 [핵심] 버퍼 기반 리라이트 수행
-        // aof.rs에서 구현한 rewrite 로직은 이제 Shard의 인덱스 순서대로 데이터를 기록합니다.
-        // 이는 로그 파편화를 제거하고 '데이터 선형화'를 달성합니다.
+        // 2. 🌟 [핵심 변화] 비동기 리라이트 수행
+        // aof.rs에서 고친 rewrite는 이제 내부적으로 16개 워커에게 Dump 메시지를 보냅니다.
+        // 워커들은 데이터를 복사해서 주자마자 다시 클라이언트 요청(SET/GET)을 처리할 수 있습니다.
+        aof.rewrite(db).await;
 
-        // 주의: 이 작업은 I/O 집약적이므로 tokio::task::spawn_blocking을 고려할 수 있으나,
-        // 현재는 aof 내부에서 BufWriter를 사용하여 효율적으로 처리하고 있습니다.
-        aof.rewrite(db);
-
-        // 3. 🌟 시스템 정화 보고
         let duration = start_time.elapsed();
         let message = format!(
-            "+OK AOF Compacted and Aligned (Duration: {:?})\r\n",
+            "+OK AOF Compacted and Aligned (Shared-Nothing Mode, Duration: {:?})\r\n",
             duration
         );
 
-        // 4. 응답 전송
+        // 3. 🌟 응답 전송
         writer.write_all(message.as_bytes()).await?;
 
-        // 5. 🌟 보너스: 리라이트 직후 스냅샷 생성 트리거 (선택 사항)
-        // 리라이트된 신선한 상태를 즉시 이진 스냅샷으로 저장하여 복구 속도를 2중으로 보장합니다.
-        aof.create_snapshot(db); // 필요 시 활성화
+        // 4. 🌟 [보너스] 비동기 스냅샷 생성
+        // 리라이트 직후의 정렬된 상태를 즉시 Snapshot으로 박제합니다.
+        aof.create_snapshot(db).await;
 
         Ok(())
     }

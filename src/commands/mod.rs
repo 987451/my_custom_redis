@@ -2,10 +2,11 @@
 
 use async_trait::async_trait;
 use crate::aof::{DbState, AofManager};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use crate::semantic::SemanticEngine;
 use tokio::io::AsyncWrite;
 use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 pub type SharedEngine = Arc<Mutex<Option<Arc<SemanticEngine>>>>;
 pub type CommandWriter<'a> = &'a mut (dyn AsyncWrite + Unpin + Send);

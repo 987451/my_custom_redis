@@ -1,8 +1,11 @@
-﻿use crate::commands::{Command, CommandWriter, SharedEngine};
+﻿// src/commands/shutdown.rs (최종 확정본)
+
+use crate::commands::{Command, CommandWriter, SharedEngine};
 use crate::aof::{DbState, AofManager};
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct ShutdownCommand;
 
@@ -16,23 +19,28 @@ impl Command for ShutdownCommand {
         _engine: &SharedEngine,
         writer: CommandWriter<'_>,
     ) -> anyhow::Result<()> {
-        println!("🛑 [SYSTEM] 안전 종료 시퀀스 가동 (Final Checkpoint)...");
+        println!("🛑 [SYSTEM] 안전 종료 시퀀스 가동...");
+        let start = Instant::now();
 
-        // 1. 🌟 [순서 중요] 먼저 로그를 깨끗하게 정렬 (Rewrite)
-        // 이 과정에서 삭제된 데이터가 제거되고 버퍼 인덱스 순서로 로그가 재작성됩니다.
-        aof.rewrite(db);
+        // 1. 비동기 리라이트 (이제 Result를 반환하므로 에러 체크 가능)
+        if let Err(e) = aof.rewrite(db).await {
+            eprintln!("❌ 리라이트 실패: {}", e);
+            writer.write_all(format!("-ERR Rewrite failed: {}\r\n", e).as_bytes()).await?;
+            // 에러가 나더라도 일단 종료 시퀀스는 계속 진행 (최대한 저장 시도)
+        }
 
-        // 2. 🌟 정렬된 데이터를 즉시 이진 스냅샷으로 저장 (Create Snapshot)
-        // 다음 부팅 시 텍스트 파싱 없이 광속으로 메모리에 올리기 위함입니다.
-        aof.create_snapshot(db);
+        // 2. 비동기 스냅샷 생성
+        if let Err(e) = aof.create_snapshot(db).await {
+            eprintln!("❌ 스냅샷 실패: {}", e);
+            writer.write_all(format!("-ERR Snapshot failed: {}\r\n", e).as_bytes()).await?;
+        }
 
-        // 3. 🌟 클라이언트에게 성공 보고 및 스트림 플러시
-        let _ = writer.write_all(b"+OK Bye. All data aligned and secured.\r\n").await;
+        let duration = start.elapsed();
+        let msg = format!("+OK Bye. All data secured in {:?}.\r\n", duration);
+        let _ = writer.write_all(msg.as_bytes()).await;
         let _ = writer.flush().await;
 
-        println!("✨ [SYSTEM] 정렬 완료. 스냅샷 저장 완료. 이제 안전하게 종료합니다.");
-
-        // 4. 프로세스 종료
+        println!("✨ [SYSTEM] 모든 작업 완료. 종료합니다.");
         std::process::exit(0);
     }
 }

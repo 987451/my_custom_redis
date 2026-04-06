@@ -1,9 +1,9 @@
 ﻿use crate::commands::{Command, CommandWriter, SharedEngine};
-use crate::aof::{DbState, AofManager, DbValue};
+use crate::aof::{DbState, AofManager, ShardRequest}; // ShardRequest 추가
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::oneshot;
 
 pub struct HgetCommand;
 
@@ -22,50 +22,49 @@ impl Command for HgetCommand {
             writer.write_all(b"-ERR wrong number of arguments for 'hget' command\r\n").await?;
             return Ok(());
         }
-        let key = &args[1];
-        let field = &args[2];
+        let key = args[1].clone();
+        let field = args[2].clone();
 
-        // 🌟 [핵심] 해시 필드 추출 로직
-        let result = {
-            let shard_mutex = db.get_shard(key);
-            let shard = shard_mutex.lock().unwrap();
+        // 🌟 [혁신] 자물쇠 대신 담당 워커에게 채널 전송
+        let sender = db.get_shard_sender(&key);
+        let (tx, rx) = oneshot::channel();
 
-            // 단계 1: 키를 통해 버퍼 내 인덱스(Index) 찾기
-            if let Some(&idx) = shard.key_to_idx.get(key) {
+        // 2. 🌟 워커에게 HGet 요청 메시지 전송
+        // ShardRequest::HGet은 key, field와 응답용 채널(tx)을 전달합니다.
+        if let Err(_) = sender.send(ShardRequest::HGet {
+            key,
+            field,
+            resp: tx,
+        }).await {
+            writer.write_all(b"-ERR shard worker communication failed\r\n").await?;
+            return Ok(());
+        }
 
-                // 단계 2: TTL(만료) 확인
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                if let Some(exp) = shard.expiries[idx] {
-                    if exp != 0 && exp <= now {
-                        None // 만료됨
-                    } else {
-                        // 단계 3: 데이터 타입 확인 및 필드 추출
-                        match &shard.values[idx] {
-                            DbValue::Hash(map) => map.get(field).cloned(),
-                            _ => return Err(anyhow::anyhow!("WRONGTYPE Operation against a key holding the wrong kind of value")),
-                        }
-                    }
-                } else {
-                    // 만료 설정 없는 경우 즉시 추출
-                    match &shard.values[idx] {
-                        DbValue::Hash(map) => map.get(field).cloned(),
-                        _ => return Err(anyhow::anyhow!("WRONGTYPE Operation against a key holding the wrong kind of value")),
-                    }
-                }
-            } else {
-                None // 키 없음
+        // 3. 🌟 워커의 답변 대기
+        // 워커는 Result<Option<String>, String> 형태로 성공/실패/없음 응답을 보냅니다.
+        let result = match rx.await {
+            Ok(res) => res,
+            Err(_) => {
+                writer.write_all(b"-ERR worker response timeout\r\n").await?;
+                return Ok(());
             }
         };
 
-        // 2. 결과 전송
+        // 4. 🌟 결과에 따른 RESP 응답 처리
         match result {
-            Some(v) => {
-                let response = format!("${}\r\n{}\r\n", v.as_bytes().len(), v);
+            Ok(Some(value)) => {
+                // 값 발견: Bulk String 반환
+                let response = format!("${}\r\n{}\r\n", value.as_bytes().len(), value);
                 writer.write_all(response.as_bytes()).await?;
             }
-            None => {
-                // 키나 필드가 없는 경우 Null Bulk String 반환
+            Ok(None) => {
+                // 키나 필드가 없음: Null Bulk String 반환
                 writer.write_all(b"$-1\r\n").await?;
+            }
+            Err(e_msg) => {
+                // 타입 불일치(WRONGTYPE) 등의 에러 발생 시
+                let err_res = format!("-ERR {}\r\n", e_msg);
+                writer.write_all(err_res.as_bytes()).await?;
             }
         }
 

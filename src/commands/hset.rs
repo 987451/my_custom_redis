@@ -1,9 +1,9 @@
 ﻿use crate::commands::{Command, CommandWriter, SharedEngine};
-use crate::aof::{DbState, AofManager, DbValue, VECTOR_DIM};
+use crate::aof::{DbState, AofManager, DbValue, VECTOR_DIM, ShardRequest};
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
-use std::collections::HashMap;
+use tokio::sync::oneshot;
 
 pub struct HsetCommand;
 
@@ -17,7 +17,7 @@ impl Command for HsetCommand {
         engine: &SharedEngine,
         writer: CommandWriter<'_>
     ) -> anyhow::Result<()> {
-        // 1. 인자 유효성 검사 (HSET key field value)
+        // 1. 인자 유효성 검사
         if args.len() < 4 {
             writer.write_all(b"-ERR wrong number of arguments for 'hset' command\r\n").await?;
             return Ok(());
@@ -26,76 +26,39 @@ impl Command for HsetCommand {
         let field = args[2].clone();
         let value = args[3].clone();
 
-        // 2. 🌟 시맨틱 임베딩 생성 (락 밖에서 수행하여 병렬성 확보)
-        // 해시의 경우 특정 필드가 바뀌었을 때 전체의 의미를 재계산하거나, 해당 필드값으로 임베딩을 업데이트합니다.
+        // 2. 🌟 시맨틱 임베딩 생성 (비동기 자물쇠 적용)
         let embedding = {
-            let opt = engine.lock().unwrap();
+            // [해결] lock() 뒤에 .await을 붙이고 unwrap()을 삭제합니다.
+            let opt = engine.lock().await;
             opt.as_ref()
                 .map(|e| e.embed(&value).unwrap_or_else(|_| vec![0.0; VECTOR_DIM]))
                 .unwrap_or_else(|| vec![0.0; VECTOR_DIM])
         };
 
-        enum HsetResult {
-            Created,
-            Updated,
-            WrongType,
-        }
+        // 3. 🌟 Shared-Nothing 워커에게 요청 전송
+        let sender = db.get_shard_sender(&key);
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
-        // 3. 🌟 [핵심] 버퍼 엔진 데이터 수정 로직
-        let (result, final_val) = {
-            let shard_mutex = db.get_shard(&key);
-            let mut shard = shard_mutex.lock().unwrap();
+        sender.send(crate::aof::ShardRequest::HSet {
+            key: key.clone(),
+            field,
+            value,
+            vector: embedding.clone(),
+            resp: tx,
+        }).await.map_err(|_| anyhow::anyhow!("Shard worker disconnected"))?;
 
-            if let Some(&idx) = shard.key_to_idx.get(&key) {
-                // Case A: 키가 이미 존재함
-                match shard.values[idx] {
-                    DbValue::Hash(ref mut map) => {
-                        let is_new_field = !map.contains_key(&field);
-                        map.insert(field, value);
+        // 4. 워커로부터 결과 수신 (is_new_field, final_db_val)
+        match rx.await? {
+            Ok((is_new, final_val)) => {
+                // AOF 기록 (비동기로 변경됨을 가정)
+                aof.log_set(&key, &final_val, None, &embedding).await;
 
-                        // 벡터 버퍼(`vectors`)의 해당 슬롯 업데이트 (분석용 데이터 동기화)
-                        let start = idx * VECTOR_DIM;
-                        shard.vectors[start..start + VECTOR_DIM].copy_from_slice(&embedding);
-
-                        let res = if is_new_field { HsetResult::Created } else { HsetResult::Updated };
-                        (res, shard.values[idx].clone())
-                    }
-                    DbValue::Empty => {
-                        // 삭제되었던 슬롯이라면 새로운 Hash로 초기화
-                        let mut map = HashMap::new();
-                        map.insert(field, value);
-                        let val = DbValue::Hash(map);
-                        shard.values[idx] = val.clone();
-
-                        let start = idx * VECTOR_DIM;
-                        shard.vectors[start..start + VECTOR_DIM].copy_from_slice(&embedding);
-                        (HsetResult::Created, val)
-                    }
-                    _ => (HsetResult::WrongType, DbValue::Empty),
-                }
-            } else {
-                // Case B: 새로운 키 생성
-                let mut map = HashMap::new();
-                map.insert(field, value);
-                let val = DbValue::Hash(map);
-
-                // 전용 insert_data 함수를 통해 버퍼의 빈 슬롯을 찾아 안전하게 삽임
-                shard.insert_data(key.clone(), val.clone(), None, embedding.clone());
-                (HsetResult::Created, val)
+                let resp = if is_new { b":1\r\n" } else { b":0\r\n" };
+                writer.write_all(resp).await?;
             }
-        };
-
-        // 4. 후속 처리 및 응답
-        match result {
-            HsetResult::Created | HsetResult::Updated => {
-                // AOF 로그 기록 (전체 Hash 상태를 기록하여 일관성 유지)
-                aof.log_set(&key, &final_val, None, &embedding);
-
-                let resp = if matches!(result, HsetResult::Created) { ":1\r\n" } else { ":0\r\n" };
-                writer.write_all(resp.as_bytes()).await?;
-            }
-            HsetResult::WrongType => {
-                writer.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n").await?;
+            Err(e_msg) => {
+                let err_res = format!("-ERR {}\r\n", e_msg);
+                writer.write_all(err_res.as_bytes()).await?;
             }
         }
 

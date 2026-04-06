@@ -1,9 +1,10 @@
 ﻿use crate::commands::{Command, CommandWriter, SharedEngine};
-use crate::aof::{DbState, AofManager, DbValue, VECTOR_DIM};
+use crate::aof::{DbState, AofManager, DbValue, VECTOR_DIM, ShardRequest}; // ShardRequest 추가
 use async_trait::async_trait;
 use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
+use tokio::sync::oneshot;
 
 pub struct SetCommand;
 
@@ -26,38 +27,50 @@ impl Command for SetCommand {
         let key = args[1].clone();
         let val_str = args[2].clone();
 
-        // 옵션: 만료 시간 처리 (간단한 구현)
+        // 🌟 [전략] 만료 시간 파싱
         let mut expiry = None;
         if args.len() >= 5 && args[3].to_uppercase() == "EX" {
             if let Ok(secs) = args[4].parse::<u64>() {
-                expiry = Some(SystemTime::now() + std::time::Duration::from_secs(secs));
+                expiry = Some(SystemTime::now() + Duration::from_secs(secs));
             }
         }
 
-        // 2. 🌟 [지능형 연산] 시맨틱 임베딩 생성 (락 외부에서 수행)
-        // 텍스트를 고차원 벡터로 변환하여 분석 준비를 마칩니다.
+        // 2. 🌟 [지능형 연산] 시맨틱 임베딩 생성 (워커 외부에서 병렬 수행)
+        // 이 무거운 연산은 워커 스레드가 아닌 현재 태스크에서 수행하여 워커의 부하를 막습니다.
         let embedding = {
-            let opt = engine.lock().unwrap();
+            let opt = engine.lock().await; // 🌟 수정 포인트: .await 사용
             opt.as_ref()
                 .map(|eng| eng.embed(&val_str).unwrap_or_else(|_| vec![0.0; VECTOR_DIM]))
                 .unwrap_or_else(|| vec![0.0; VECTOR_DIM])
         };
 
-        // 3. 🌟 [핵심] 버퍼 레이아웃에 데이터 주입
+        // 3. 🌟 [혁신] 메시지 패싱을 통한 데이터 주입
         let db_val = DbValue::String(val_str);
-        {
-            let shard_mutex = db.get_shard(&key);
-            let mut shard = shard_mutex.lock().unwrap();
 
-            // 우리가 aof.rs에서 만든 insert_data 호출
-            // 이 함수 내부에서 빈 슬롯 재사용 및 벡터 버퍼 정렬이 일어납니다.
-            shard.insert_data(key.clone(), db_val.clone(), expiry, embedding.clone());
+        // 해당 키를 담당하는 워커의 전송기(Sender) 획득
+        let sender = db.get_shard_sender(&key);
+        let (tx, rx) = oneshot::channel();
+
+        // 워커에게 Set 요청 전송 (Mutex 자물쇠 사용 안 함)
+        if let Err(_) = sender.send(ShardRequest::Set {
+            key: key.clone(),
+            value: db_val.clone(),
+            exp: expiry,
+            vector: embedding.clone(),
+            resp: tx,
+        }).await {
+            writer.write_all(b"-ERR shard worker communication failed\r\n").await?;
+            return Ok(());
         }
 
-        // 4. 영속성 로그 기록 (새로운 정렬형 로그 포맷)
+        // 4. 🌟 워커의 작업 완료 신호 대기 (await)
+        // 워커가 메모리 버퍼 정렬 및 HNSW 연결을 마치면 신호를 줍니다.
+        let _ = rx.await?;
+
+        // 5. 영속성 로그 기록
         aof.log_set(&key, &db_val, expiry, &embedding);
 
-        // 5. RESP 표준 응답
+        // 6. RESP 표준 응답
         writer.write_all(b"+OK\r\n").await?;
         Ok(())
     }

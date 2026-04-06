@@ -1,62 +1,73 @@
 ﻿/**
- * 🧠 AI Buffer Engine Studio - Core Logic (app.js)
- * 1. Engine Control (Commands)
- * 2. Data Management (CRUD)
- * 3. Bulk Intelligence (Drag & Drop)
+ * 🚀 AI Knowledge Lab - Core Logic (app.js)
+ * Architecture: Shared-Nothing & Semantic Intelligence
  */
 
-// --- 1. 엔진 제어 (Command Center) ---
+// --- 1. 엔진 제어 및 관제 (Command Center) ---
+
 async function runCommand(cmd) {
     const output = document.getElementById('cmd-output');
-    output.innerText = `⏳ 명령 실행 중: ${cmd}...`;
-    output.classList.remove('error', 'success');
+    output.innerText = `⏳ 워커에게 명령 전달 중: ${cmd}...`;
 
     try {
-        // 백엔드의 명령어 인터페이스 호출 (query string 방식)
         const res = await fetch(`/api/cmd?command=${cmd}`, { method: 'POST' });
         const result = await res.text();
 
-        output.innerText = `[${new Date().toLocaleTimeString()}] ${result}`;
-        output.classList.add('success');
+        // 결과 가공: RESP 기호 정화 및 출력
+        output.innerHTML = `<span style="color:#00ff00;">[${new Date().toLocaleTimeString()}]</span> ${result}`;
 
-        // 특정 명령어 실행 후 데이터 갱신
-        if (['REWRITE', 'DEL', 'SET', 'SNAPSHOT'].includes(cmd)) {
+        // 데이터 변경 명령인 경우 테이블 즉시 갱신
+        if (['REWRITE', 'DEL', 'SET', 'SNAPSHOT', 'BULK'].includes(cmd)) {
             updateData();
         }
+
+        // 샤드 애니메이션 시뮬레이션 (워커가 일하고 있음을 시각화)
+        flashShards();
     } catch (err) {
-        output.innerText = `❌ 에러: ${err.message}`;
-        output.classList.add('error');
+        output.innerHTML = `<span style="color:#ff4444;">❌ 에러: ${err.message}</span>`;
     }
 }
 
-// app.js 의 exportData 함수 수정
-async function exportData() {
-    // 🌟 현재 필터창에 입력된 검색어 가져오기
-    const q = document.getElementById('filter-q').value;
+// 🌟 [신규] AI 시맨틱 검색 로직
+async function runAiSearch() {
+    const queryInput = document.getElementById('ai-query');
+    const resultBox = document.getElementById('ai-results');
+    const query = queryInput.value.trim();
+
+    if (!query) return alert("질문 내용을 입력해주세요.");
+
+    resultBox.innerHTML = "🧠 16개 샤드 워커가 의미를 분석하며 검색 중입니다...";
 
     try {
-        // 🌟 쿼리 스트링으로 필터값 전달
-        const res = await fetch(`/api/export?q=${encodeURIComponent(q)}`);
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
+        // 백엔드의 SEARCH 명령어 호출 (K=5, Threshold=0.5 기본값 사용 가정)
+        const res = await fetch(`/api/cmd?command=SEARCH&query=${encodeURIComponent(query)}`, { method: 'POST' });
+        const data = await res.text();
 
-        // 파일명에 필터 키워드 포함 (관리 용이)
-        const fileName = q ? `filtered_${q}_${Date.now()}.jsonl` : `full_export_${Date.now()}.jsonl`;
-        a.download = fileName;
+        // 결과를 읽기 좋게 줄바꿈 처리하여 표시
+        const formattedData = data.replace(/\n/g, '<br>');
+        resultBox.innerHTML = `<div class="search-result-item">${formattedData}</div>`;
 
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
+        flashShards(); // 검색 시에도 샤드들이 반응하게 함
     } catch (err) {
-        alert("내보내기 실패: " + err.message);
+        resultBox.innerHTML = `<span style="color:#f44336;">검색 중 오류 발생: ${err.message}</span>`;
     }
 }
 
-// --- 2. 데이터 관리 (CRUD) ---
+// 🌟 [신규] 샤드 상태 시각화 애니메이션
+function flashShards() {
+    const dots = document.querySelectorAll('.shard-dot');
+    dots.forEach(dot => {
+        dot.style.background = '#34a853';
+        dot.style.boxShadow = '0 0 10px #34a853';
+        setTimeout(() => {
+            dot.style.background = '#ccc';
+            dot.style.boxShadow = 'none';
+        }, 500 + Math.random() * 1000); // 워커별로 처리 시간이 다름을 표현
+    });
+}
 
-// 데이터 조회 및 테이블 업데이트 (통합 버전)
+// --- 2. 데이터 관리 (CRUD & Analysis) ---
+
 async function updateData() {
     const qInput = document.getElementById('filter-q');
     const q = qInput ? qInput.value : "";
@@ -68,8 +79,8 @@ async function updateData() {
         let html = `<table><thead><tr>
             <th style="width: 10%">Type</th>
             <th style="width: 15%">Key</th>
-            <th style="width: 40%">Value Content</th>
-            <th style="width: 15%">Expire</th>
+            <th style="width: 40%">Value (Hash Content)</th>
+            <th style="width: 15%">Expiry</th>
             <th style="width: 20%">Actions</th>
         </tr></thead><tbody>`;
 
@@ -79,75 +90,46 @@ async function updateData() {
                 ? new Date(item.expiry * 1000).toLocaleTimeString()
                 : '<span style="color:#aaa">Persist</span>';
 
-            // 안전한 편집을 위한 값 처리
-            const safeValue = item.value.replace(/'/g, "\\'");
+            // 값의 길이를 적절히 제한하여 UI 깨짐 방지
+            const displayValue = item.value.length > 150 ? item.value.substring(0, 150) + "..." : item.value;
+            const safeValue = displayValue.replace(/'/g, "\\'");
 
             html += `<tr>
                 <td><span class="badge ${typeClass}">${item.data_type}</span></td>
                 <td><strong>${key}</strong></td>
-                <td class="val-text">${item.value}</td>
+                <td class="val-text">${displayValue}</td>
                 <td>${expireText}</td>
                 <td>
-                    <button class="btn-edit" onclick="editKey('${key}', '${safeValue}', '${item.data_type}')">편집</button>
-                    <button class="btn-delete" onclick="deleteKey('${key}')">삭제</button>
+                    <button class="btn-edit" onclick="editKey('${key}', '${safeValue}', '${item.data_type}')">✏️</button>
+                    <button class="btn-delete" onclick="deleteKey('${key}')">🗑️</button>
                 </td>
             </tr>`;
         }
         html += '</tbody></table>';
         document.getElementById('data-table').innerHTML = html;
     } catch (err) {
-        console.error("Data fetch error:", err);
+        console.error("Fetch error:", err);
     }
 }
 
-async function addData() {
-    const key = document.getElementById('key').value;
-    const rawValue = document.getElementById('val-json').value;
-    const type = document.getElementById('data-type').value;
-    if(!key || !rawValue) return alert("키와 값을 모두 입력하세요.");
-
-    let finalValue;
+async function exportData() {
+    const q = document.getElementById('filter-q').value;
     try {
-        // String 타입이 아니면 JSON 파싱 시도
-        finalValue = (type === 'string') ? rawValue : JSON.parse(rawValue);
-    } catch(e) {
-        return alert("JSON 형식이 올바르지 않습니다. (예: [\"a\", \"b\"] 또는 {\"k\": \"v\"})");
-    }
-
-    const res = await fetch('/api/data', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ key, value: finalValue, data_type: type, ex: null })
-    });
-
-    if (res.ok) {
-        document.getElementById('val-json').value = '';
-        document.getElementById('key').value = '';
-        updateData();
+        const res = await fetch(`/api/export?q=${encodeURIComponent(q)}`);
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = q ? `filtered_${q}_export.jsonl` : `full_brain_dump.jsonl`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+    } catch (err) {
+        alert("내보내기 실패");
     }
 }
 
-async function deleteKey(key) {
-    if(!confirm(`'${key}' 데이터를 영구 삭제할까요?`)) return;
-    const res = await fetch(`/api/data/${encodeURIComponent(key)}`, { method: 'DELETE' });
-    if(res.ok) updateData();
-}
-
-function editKey(key, value, type) {
-    document.getElementById('key').value = key;
-    document.getElementById('data-type').value = type.toLowerCase();
-
-    // 디버그 출력물(Rust format!)을 JSON으로 역변환 시도
-    let cleanVal = value;
-    if(type !== 'String' && !value.startsWith('[') && !value.startsWith('{')) {
-        cleanVal = value.replace(/\{/g, '{"').replace(/: /g, '": "').replace(/, /g, '", "').replace(/\}/g, '"}')
-            .replace(/\[/g, '["').replace(/\]/g, '"]').replace(/", "/g, '", "');
-    }
-    document.getElementById('val-json').value = cleanVal;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-// --- 3. 벌크 지능 (Drag & Drop) ---
+// --- 3. 벌크 데이터 지능형 주입 (CSV/JSON/TXT) ---
 
 const dropZone = document.getElementById('drop-zone');
 if (dropZone) {
@@ -171,41 +153,21 @@ if (dropZone) {
                     dataToUpload = JSON.parse(content);
                 }
                 else if (file.name.endsWith('.csv')) {
-                    // 🌟 [천재적 혁신] CSV를 Hash 구조로 자동 변환
                     const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                    if (lines.length < 2) throw new Error("CSV 파일에 데이터가 부족합니다.");
-
-                    // 1단계: 헤더 추출 (첫 줄)
                     const headers = lines[0].split(',').map(h => h.trim());
 
-                    // 2단계: 각 행을 객체로 변환하여 Hash 타입으로 구성
                     dataToUpload = lines.slice(1).map((line, rowIdx) => {
                         const values = line.split(',').map(v => v.trim());
                         const rowObject = {};
-                        headers.forEach((header, colIdx) => {
-                            rowObject[header] = values[colIdx] || ""; // 값이 없으면 빈 문자열
-                        });
-
-                        return {
-                            key: `${file.name}_${rowIdx + 1}`,
-                            value: rowObject, // 🌟 문자열이 아닌 객체 전송
-                            data_type: "hash" // 🌟 타입을 hash로 명시
-                        };
+                        headers.forEach((h, i) => rowObject[h] = values[i] || "");
+                        return { key: `${file.name}_${rowIdx+1}`, value: rowObject, data_type: "hash" };
                     });
-                }
-                else {
-                    // TXT 파일: 기존의 의미 있는 문장 단위 쪼개기 유지
-                    dataToUpload = content.split(/[.\n]/)
-                        .filter(t => t.trim().length > 5)
-                        .map((text, i) => ({
-                            key: `${file.name}_${i}`,
-                            value: text.trim(),
-                            data_type: "string"
-                        }));
+                } else {
+                    dataToUpload = content.split(/[.\n]/).filter(t => t.trim().length > 5)
+                        .map((text, i) => ({ key: `${file.name}_${i}`, value: text.trim(), data_type: "string" }));
                 }
 
-                document.getElementById('upload-status').innerHTML =
-                    `<span style="color:var(--primary)">⏳ ${dataToUpload.length}개의 데이터 구조화 및 인덱싱 중...</span>`;
+                document.getElementById('upload-status').innerHTML = `⏳ 16개 샤드로 분산 인덱싱 중... (${dataToUpload.length}건)`;
 
                 const res = await fetch('/api/bulk', {
                     method: 'POST',
@@ -214,34 +176,64 @@ if (dropZone) {
                 });
 
                 if(res.ok) {
-                    document.getElementById('upload-status').innerHTML =
-                        `<span style="color:var(--success)">✅ 완료! ${dataToUpload.length}개의 데이터가 Hash 구조로 저장되었습니다.</span>`;
+                    document.getElementById('upload-status').innerHTML = `<span style="color:#34a853;">✅ 완료! 데이터가 지능적으로 구조화되었습니다.</span>`;
                     updateData();
+                    flashShards();
                 }
             } catch (err) {
-                alert("파일 처리 실패: " + err.message);
-                document.getElementById('upload-status').innerText = "";
+                alert("처리 실패: " + err.message);
             }
         };
         reader.readAsText(file);
     });
 }
 
-// --- 4. 유틸리티 및 초기화 ---
+// --- 4. 유틸리티 (기존 로직 최적화 통합) ---
 
 function updatePlaceholder() {
     const type = document.getElementById('data-type').value;
     const textarea = document.getElementById('val-json');
-    const examples = {
-        string: "일반 텍스트를 입력하세요...",
-        list: '["항목1", "항목2", "항목3"]',
-        hash: '{"필드": "값", "이름": "철수"}',
-        set: '["유니크1", "유니크2"]'
-    };
-    textarea.placeholder = examples[type];
+    const tips = { string: "텍스트 입력...", list: '["A", "B"]', hash: '{"키": "값"}', set: '["X", "Y"]' };
+    textarea.placeholder = tips[type];
 }
 
+async function addData() {
+    const key = document.getElementById('key').value.trim();
+    const val = document.getElementById('val-json').value.trim();
+    const type = document.getElementById('data-type').value;
+    if (!key || !val) return alert("모든 정보를 입력하세요.");
+
+    try {
+        const value = (type === 'string') ? val : JSON.parse(val);
+        const res = await fetch('/api/data', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key, value, data_type: type, ex: null })
+        });
+        if(res.ok) {
+            updateData();
+            flashShards();
+            document.getElementById('val-json').value = '';
+            document.getElementById('key').value = '';
+        }
+    } catch(e) { alert("데이터 형식이 올바르지 않습니다."); }
+}
+
+async function deleteKey(key) {
+    if(!confirm(`'${key}'를 삭제할까요?`)) return;
+    const res = await fetch(`/api/data/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    if(res.ok) updateData();
+}
+
+function editKey(key, val, type) {
+    document.getElementById('key').value = key;
+    document.getElementById('data-type').value = type.toLowerCase();
+    document.getElementById('val-json').value = val;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// 초기화
 document.addEventListener('DOMContentLoaded', () => {
     updateData();
-    setInterval(updateData, 5000); // 5초 간격 자동 갱신
+    setInterval(updateData, 5000);
 });
